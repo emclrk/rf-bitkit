@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use thiserror::Error;
+pub mod proto;
 
 #[derive(Deserialize, Clone)]
 pub struct Bitstream {
