@@ -3,6 +3,11 @@ name = "rf-bitkit"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+description = "A collection of analysis functions for reverse engineering RF protocols"
+
+[[bin]]
+name = "bitkit"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
