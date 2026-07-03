@@ -20,6 +20,8 @@ enum Commands {
         file: String,
         #[arg(short, long, default_value_t = 4)]
         symlen: usize,
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
     },
     /// Find the common prefix across all bitstreams (preamble candidate)
     Prefix { file: String },
@@ -35,12 +37,16 @@ enum Commands {
         file: String,
         #[arg(long, default_value_t = 8)]
         max_symlen: usize,
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
     },
     /// Show symbol alphabet and frequency counts across all bitstreams
     Alphabet {
         file: String,
         #[arg(short, long, default_value_t = 1)]
         symlen: usize,
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
     },
     /// Show the most frequent substrings of a given length
     Substrings {
@@ -51,6 +57,8 @@ enum Commands {
         /// Number of results to show
         #[arg(short, long, default_value_t = 10)]
         top: usize,
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
     },
     /// Cross-correlate two bitstreams from a file by index
     Correlate {
@@ -62,7 +70,7 @@ enum Commands {
         #[arg(short)]
         b: usize,
         /// Number of top results to show
-        #[arg(long, default_value_t = 10)]
+        #[arg(short, long, default_value_t = 10)]
         top: usize,
     },
 }
@@ -92,7 +100,7 @@ fn main() {
 
 fn run(cli: Cli) -> Result<(), BitkitError> {
     match cli.command {
-        Commands::Info { file, symlen } => {
+        Commands::Info { file, symlen, skip } => {
             let bitstrs = load_file(&file)?;
             let lengths: Vec<usize> = bitstrs.iter().map(|b| b.len()).collect();
             let min_len = lengths.iter().min().copied().unwrap_or(0);
@@ -104,7 +112,11 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             println!("Lengths: min={min_len}, max={max_len}, avg={avg_len:.1}");
             println!();
             for (i, bs) in bitstrs.iter().enumerate() {
-                println!("[{i:3}] {}  ({} bits)", bs.to_hex(symlen), bs.len());
+                println!(
+                    "[{i:3}] {}  ({} bits)",
+                    bs.skip(skip).to_hex(symlen),
+                    bs.len()
+                );
             }
         }
 
@@ -152,8 +164,13 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             }
         }
 
-        Commands::Sweep { file, max_symlen } => {
+        Commands::Sweep {
+            file,
+            max_symlen,
+            skip,
+        } => {
             let bitstrs = load_file(&file)?;
+            let skipped: Vec<Bitstream> = bitstrs.iter().map(|bs| bs.skip(skip)).collect();
             println!("=== Entropy Sweep: {file} ===");
             println!();
             println!(
@@ -163,28 +180,22 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
 
             let mut results = Vec::new();
             for symlen in 1..=max_symlen {
-                let avg = bitstrs
+                let avg = skipped
                     .iter()
                     .map(|bs| bs.get_normed_entropy(symlen))
                     .sum::<f32>()
-                    / bitstrs.len() as f32;
-                let unique = get_alphabet_counts(&bitstrs, symlen).len();
+                    / skipped.len() as f32;
+                let unique = get_alphabet_counts(&bitstrs, symlen, skip).len();
                 results.push((symlen, avg, unique));
             }
-            let min_entropy = results.iter().map(|(_, e, _)| *e).fold(f32::MAX, f32::min);
             for (symlen, entropy, unique) in &results {
-                let marker = if (*entropy - min_entropy).abs() < 1e-6 {
-                    " <-- minimum"
-                } else {
-                    ""
-                };
-                println!("{:>8}  {:>14.4}  {:>12}{marker}", symlen, entropy, unique);
+                println!("{:>8}  {:>14.4}  {:>12}", symlen, entropy, unique);
             }
         }
 
-        Commands::Alphabet { file, symlen } => {
+        Commands::Alphabet { file, symlen, skip } => {
             let bitstrs = load_file(&file)?;
-            let counts = get_alphabet_counts(&bitstrs, symlen);
+            let counts = get_alphabet_counts(&bitstrs, symlen, skip);
             let mut sorted: Vec<_> = counts.iter().collect();
             sorted.sort_by(|a, b| b.1.cmp(a.1));
 
@@ -196,9 +207,14 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             }
         }
 
-        Commands::Substrings { file, len, top } => {
+        Commands::Substrings {
+            file,
+            len,
+            top,
+            skip,
+        } => {
             let bitstrs = load_file(&file)?;
-            let counts = get_substr_counts(&bitstrs, len);
+            let counts = get_substr_counts(&bitstrs, len, skip);
             let mut sorted: Vec<_> = counts.iter().collect();
             sorted.sort_by(|a, b| b.1.cmp(a.1));
 
