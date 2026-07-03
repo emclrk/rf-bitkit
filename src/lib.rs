@@ -97,6 +97,9 @@ impl Bitstream {
                 .collect::<String>(),
         })
     }
+    pub fn skip(&self, nbits: usize) -> Self {
+        Self::new(self.bits[nbits..].to_string()).unwrap()
+    }
     /// Number of bits in the Bitstream
     pub fn len(&self) -> usize {
         self.bits.len()
@@ -315,30 +318,56 @@ pub fn positionwise_entropy(bitstrs: &[Bitstream]) -> Vec<f32> {
 }
 /// Find the symbol alphabet (the full set of symbols that actually occur)
 /// across multiple Bitstreams.
-pub fn get_alphabet(bitstrs: &[Bitstream], symlen: usize) -> HashSet<String> {
+pub fn get_alphabet(bitstrs: &[Bitstream], symlen: usize, skip_bits: usize) -> HashSet<String> {
     let mut counts: HashMap<String, u32> = HashMap::new();
     for bitstr in bitstrs {
-        bitstr.accumulate_sym_counts(symlen, &mut counts);
+        if skip_bits > 0 {
+            bitstr
+                .skip(skip_bits)
+                .accumulate_sym_counts(symlen, &mut counts);
+        } else {
+            bitstr.accumulate_sym_counts(symlen, &mut counts);
+        }
     }
     counts.into_keys().collect::<HashSet<String>>()
 }
 
 /// Return frequency counts for the symbol alphabet (the full set of symbols that actually occur)
 /// across multiple Bitstreams.
-pub fn get_alphabet_counts(bitstrs: &[Bitstream], symlen: usize) -> HashMap<String, u32> {
+pub fn get_alphabet_counts(
+    bitstrs: &[Bitstream],
+    symlen: usize,
+    skip_bits: usize,
+) -> HashMap<String, u32> {
     let mut counts: HashMap<String, u32> = HashMap::new();
     for bitstr in bitstrs {
-        bitstr.accumulate_sym_counts(symlen, &mut counts);
+        if skip_bits > 0 {
+            bitstr
+                .skip(skip_bits)
+                .accumulate_sym_counts(symlen, &mut counts);
+        } else {
+            bitstr.accumulate_sym_counts(symlen, &mut counts);
+        }
     }
     counts
 }
 
 /// Return frequency counts for all possible substrings of length `strlen` across multiple
 /// Bitstreams.
-pub fn get_substr_counts(bitstrs: &[Bitstream], strlen: usize) -> HashMap<String, u32> {
+pub fn get_substr_counts(
+    bitstrs: &[Bitstream],
+    strlen: usize,
+    skip_bits: usize,
+) -> HashMap<String, u32> {
     let mut counts: HashMap<String, u32> = HashMap::new();
     for bitstr in bitstrs {
-        bitstr.accumulate_substr_counts(strlen, &mut counts);
+        if skip_bits > 0 {
+            bitstr
+                .skip(skip_bits)
+                .accumulate_substr_counts(strlen, &mut counts);
+        } else {
+            bitstr.accumulate_substr_counts(strlen, &mut counts);
+        }
     }
     counts
 }
@@ -452,7 +481,7 @@ mod tests {
             .entry("100".to_string())
             .and_modify(|ct| *ct += 1);
         hash_result.insert("000".to_string(), 2);
-        assert_eq!(hash_result, get_substr_counts(&vec![bs, bs2], 3));
+        assert_eq!(hash_result, get_substr_counts(&vec![bs, bs2], 3, 0));
     }
     #[test]
     fn test_bit_pcts() {
@@ -471,21 +500,21 @@ mod tests {
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<HashSet<String>>(),
-            get_alphabet(&vec![bs_1.clone()], 1)
+            get_alphabet(&vec![bs_1.clone()], 1, 0)
         );
         assert_eq!(
             ["110", "101", "011"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<HashSet<String>>(),
-            get_alphabet(&vec![bs_1.clone()], 3)
+            get_alphabet(&vec![bs_1.clone()], 3, 0)
         );
         assert_eq!(
             ["1101", "0110", "1011", "0101", "0011"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<HashSet<String>>(),
-            get_alphabet(&vec![bs_1.clone(), bs_2.clone()], 4)
+            get_alphabet(&vec![bs_1.clone(), bs_2.clone()], 4, 0)
         );
         let hash_result = HashMap::from([
             (String::from("1101"), 1),
@@ -494,7 +523,7 @@ mod tests {
             (String::from("0101"), 1),
             (String::from("0011"), 1),
         ]);
-        assert_eq!(hash_result, get_alphabet_counts(&vec![bs_1, bs_2], 4));
+        assert_eq!(hash_result, get_alphabet_counts(&vec![bs_1, bs_2], 4, 0));
     }
     #[test]
     fn test_get_total_entropy() {
