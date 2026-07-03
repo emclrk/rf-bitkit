@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A collection of analysis functions for reverse engineering RF protocols"
+repository = "https://github.com/emclrk/rf-bitkit"
+readme = "README.md"
+keywords = ["rf", "sdr", "protocol", "bitstream", "reverse-engineering"]
+categories = ["command-line-utilities", "algorithms"]
 
 [[bin]]
 name = "bitkit"
