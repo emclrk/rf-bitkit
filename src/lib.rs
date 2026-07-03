@@ -45,6 +45,18 @@ impl CorrelationResult {
             overlap: ol,
         }
     }
+    pub fn offset(&self) -> i32 {
+        self.offset
+    }
+    pub fn matches(&self) -> u32 {
+        self.matches
+    }
+    pub fn overlap(&self) -> u32 {
+        self.overlap
+    }
+    pub fn score(&self) -> f32 {
+        self.matches as f32 / self.overlap as f32
+    }
 }
 
 #[derive(Error, Debug)]
@@ -180,6 +192,11 @@ impl Bitstream {
             .filter(|v| **v != 0.0)
             .map(|p| -p * p.log2())
             .sum()
+    }
+    /// Entropy grows with symlen, so divide the entropy by the symlen to make it comparable across
+    /// symlens. This results in a "fraction of maximum entropy" instead of the raw value.
+    pub fn get_normed_entropy(&self, symlen: usize) -> f32 {
+        self.get_total_entropy(symlen).max(0.0) / (symlen as f32)
     }
     /// Self-information (in bits) of each symbol found in the Bitstream
     pub fn get_self_information(&self, symlen: usize) -> HashMap<String, f32> {
