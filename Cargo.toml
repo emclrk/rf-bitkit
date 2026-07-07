@@ -12,6 +12,7 @@ categories = ["command-line-utilities", "algorithms"]
 [[bin]]
 name = "bitkit"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }

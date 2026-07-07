@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use thiserror::Error;
+pub mod linalg;
 pub mod proto;
 
 /// Wrapper struct for a string of demodulated bits
@@ -76,6 +77,12 @@ pub enum BitkitError {
 
     #[error("Bit string length mismatch: {0} {1}")]
     LengthMismatch(usize, usize),
+
+    #[error("Index error: used {0} max {1}")]
+    IndexError(usize, usize),
+
+    #[error("Dimension error: {0}x{1} * {2} {3}")]
+    MatrixMultDimError(usize, usize, usize, usize),
 }
 
 impl Bitstream {
