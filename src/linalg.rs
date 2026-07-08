@@ -1,10 +1,10 @@
 use crate::{BitkitError, Bitstream};
 use std::fmt;
-use std::ops::{Index, Mul};
+use std::ops::{Index, IndexMut, Mul};
 
 /// Matrix of bits. Each row is a Bitstream. It's assumed that all Bitstreams are of the same
 /// length.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct BitMatrix {
     bits: Vec<u8>,   // bit matrix, stored row-wise
     num_rows: usize, // equivalent to column length
@@ -76,20 +76,86 @@ impl BitMatrix {
             num_cols: self.num_rows,
         }
     }
-    /// Get reduced row echelon form of a matrix
-    pub fn rref(&self) -> Result<Self, BitkitError> {
-        // stub, not yet implemented
-        Ok(BitMatrix {
-            bits: vec![],
-            num_rows: 0,
-            num_cols: 0,
-        })
+    fn swap_rows(&mut self, row_1_idx: usize, row_2_idx: usize) {
+        if row_1_idx == row_2_idx {
+            return;
+        }
+        let row_1 = self[row_1_idx].to_vec();
+        let row_2 = self[row_2_idx].to_vec();
+        self.bits[row_1_idx * self.num_cols..(row_1_idx + 1) * self.num_cols]
+            .copy_from_slice(&row_2);
+        self.bits[row_2_idx * self.num_cols..(row_2_idx + 1) * self.num_cols]
+            .copy_from_slice(&row_1);
     }
+
     /// Get rank of the matrix
     pub fn rank(&self) -> usize {
-        // get reduced row echelon form of the matrix
-        // stub, not yet implemented
-        0
+        let row_ech = self.row_echelon_form();
+        let mut row_rank = 0;
+        for ii in 0..row_ech.num_rows {
+            if row_ech[ii].iter().any(|x| *x != 0) {
+                row_rank += 1;
+            }
+        }
+        row_rank
+    }
+    /// Get row echelon form of the matrix
+    pub fn row_echelon_form(&self) -> Self {
+        let mut row_ech = self.clone();
+        let mut min_row = 0;
+        let mut min_col = 0;
+        'outer: loop {
+            let mut pivot: Option<usize> = None;
+            while pivot.is_none() {
+                for ii in min_row..row_ech.num_rows {
+                    if row_ech[ii][min_col] == 1 {
+                        pivot = Some(ii);
+                        break;
+                    }
+                }
+                if pivot.is_none() {
+                    if min_col < row_ech.num_cols - 1 {
+                        min_col += 1;
+                    } else {
+                        break 'outer;
+                    }
+                }
+            }
+            if let Some(p) = pivot {
+                row_ech.swap_rows(min_row, p);
+                if min_row + 1 < row_ech.num_rows {
+                    for ii in min_row + 1..row_ech.num_rows {
+                        if row_ech[ii][min_col] == 1 {
+                            for jj in min_col..row_ech.num_cols {
+                                row_ech[ii][jj] ^= row_ech[min_row][jj];
+                            }
+                        }
+                    }
+                }
+                min_row += 1;
+                if min_row >= row_ech.num_rows || min_col >= row_ech.num_cols {
+                    break 'outer;
+                }
+            }
+        }
+        row_ech
+    } // fn ref
+    /// Get reduced row echelon form of a matrix
+    pub fn rref(&self) -> Self {
+        let mut rrow_ech = self.row_echelon_form();
+        for row in (0..rrow_ech.num_rows).rev() {
+            if let Some(pivot_col) = rrow_ech[row].iter().position(|&x| x == 1) {
+                let pivot_row = rrow_ech[row].to_vec();
+                for ii in (0..row).rev() {
+                    if rrow_ech[ii][pivot_col] == 1 {
+                        for jj in pivot_col..rrow_ech.num_cols {
+                            rrow_ech[ii][jj] ^= pivot_row[jj];
+                        }
+                    }
+                }
+            }
+        }
+        rrow_ech
     }
 } // impl BitMatrix
 
@@ -101,13 +167,20 @@ impl Index<usize> for BitMatrix {
     }
 }
 
+impl IndexMut<usize> for BitMatrix {
+    fn index_mut(&mut self, row: usize) -> &mut [u8] {
+        let start = row * self.num_cols;
+        &mut self.bits[start..start + self.num_cols]
+    }
+}
+
 impl fmt::Display for BitMatrix {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for ii in 0..self.num_rows {
             for bit in &self[ii] {
                 write!(f, "| {} ", bit)?;
             }
-            write!(f, "|\n")?;
+            writeln!(f, "|")?;
         }
         Ok(())
     }
@@ -173,7 +246,6 @@ mod tests {
             Bitstream::new(String::from("11111")).unwrap(),
         ])
         .unwrap();
-        println!("{}", matrix);
         let expect = BitMatrix::new(&vec![
             Bitstream::new(String::from("000")).unwrap(),
             Bitstream::new(String::from("100")).unwrap(),
@@ -226,7 +298,48 @@ mod tests {
             Bitstream::new(String::from("10")).unwrap(),
         ])
         .unwrap();
-        println!("mat1:\n{mat1}\n mat1_t:\n{mat1_t}");
         assert_eq!((&mat1 * &mat1_t).unwrap(), expect);
+    }
+    #[test]
+    fn test_row_ech() {
+        let matrix = BitMatrix::new(&vec![
+            Bitstream::new(String::from("10110")).unwrap(),
+            Bitstream::new(String::from("01010")).unwrap(),
+            Bitstream::new(String::from("10101")).unwrap(),
+            Bitstream::new(String::from("11000")).unwrap(),
+            Bitstream::new(String::from("11111")).unwrap(),
+        ])
+        .unwrap();
+        let row_ech = matrix.row_echelon_form();
+        let expected = BitMatrix::new(&vec![
+            Bitstream::new(String::from("10110")).unwrap(),
+            Bitstream::new(String::from("01010")).unwrap(),
+            Bitstream::new(String::from("00100")).unwrap(),
+            Bitstream::new(String::from("00011")).unwrap(),
+            Bitstream::new(String::from("00000")).unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(row_ech, expected);
+    }
+    #[test]
+    fn test_red_row_ech() {
+        let matrix = BitMatrix::new(&vec![
+            Bitstream::new(String::from("10110")).unwrap(),
+            Bitstream::new(String::from("01010")).unwrap(),
+            Bitstream::new(String::from("10101")).unwrap(),
+            Bitstream::new(String::from("11000")).unwrap(),
+            Bitstream::new(String::from("11111")).unwrap(),
+        ])
+        .unwrap();
+        let rrow_ech = matrix.rref();
+        let expected = BitMatrix::new(&vec![
+            Bitstream::new(String::from("10001")).unwrap(),
+            Bitstream::new(String::from("01001")).unwrap(),
+            Bitstream::new(String::from("00100")).unwrap(),
+            Bitstream::new(String::from("00011")).unwrap(),
+            Bitstream::new(String::from("00000")).unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(rrow_ech, expected);
     }
 } // mod tests
