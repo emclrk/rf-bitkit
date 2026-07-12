@@ -17,7 +17,7 @@ Some important caveats:
 
 - As of now, the algorithm assumes that the CRC strictly follows the data. If it sends them in a weird order we're probably not prepared for that.
 
-- Also assumes that there's only one CRC in the bitstream. If there's multiple CRC fields (like if there's a CRC in the header and one for the payload). Handling that is a TODO.
+- It also assumes that there's only one CRC in the bitstream. If there's multiple CRC fields (like if there's a CRC in the header and one for the payload). Handling that is a TODO.
 
 [1] G. Burel, “Blind Estimation of Encoder and Interleaver Characteristics in a Non Cooperative Context,” Academia.edu, Nov. 05, 2015. https://www.academia.edu/17802718/blind_estimation_of_encoder_and_interleaver_characteristics_in_a_non_cooperative_context (accessed July 10, 2026).
 

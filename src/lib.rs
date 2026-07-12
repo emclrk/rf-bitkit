@@ -123,6 +123,9 @@ impl Bitstream {
     pub fn bit_at(&self, index: usize) -> u8 {
         self.bits.as_bytes()[index] - b'0'
     }
+    pub fn bits_as_bytes(&self) -> Vec<u8> {
+        self.bits.as_bytes().iter().map(|bit| bit - b'0').collect()
+    }
     /// Chunk the Bitstream up into symbols of length `symlen`. The last symbol will be shorter
     /// if the Bitstream is not evenly divisible by `symlen`.
     pub fn symbols(&self, symlen: usize) -> Vec<String> {
