@@ -21,13 +21,13 @@ struct RankResult {
 /// `crc_polynomial` - the found CRC generator polynomial
 #[derive(Debug, PartialEq)]
 pub struct CrcResult {
-    start_col: usize,
-    width: usize,
-    xor_val: u128,
-    refin: bool,
-    refout: bool,
-    score: f32,
-    crc_polynomial: Vec<u8>,
+    pub start_col: usize,
+    pub width: usize,
+    pub xor_val: u128,
+    pub refin: bool,
+    pub refout: bool,
+    pub score: f32,
+    pub crc_polynomial: Vec<u8>,
 }
 /// Find the CRC in the Bitstreams, if present, and the location of the CRC bits in the protocol.
 /// Assumptions: Bitstreams are aligned correctly, each one is the same length, **the bitstreams are
@@ -110,7 +110,6 @@ pub fn find_crc_from_varying(varying_bitstrs: Vec<Bitstream>) -> Result<CrcResul
     let crc_width = bitmat.num_cols() - base_rank;
     let mut cands = construct_crc(&bitmat, &varying_bitstrs[0], start_col, crc_width)?;
     for cand in cands.iter_mut() {
-        println!("Testing candidate {:?}", cand);
         for row in 0..bitmat.num_rows() {
             let calc_crc_val = crc_zero_init(
                 &cand.crc_polynomial,
@@ -126,8 +125,6 @@ pub fn find_crc_from_varying(varying_bitstrs: Vec<Bitstream>) -> Result<CrcResul
                 }); // make sure to order MSB
             if calc_crc_val ^ cand.xor_val == crc_packed {
                 cand.score += 1.0;
-            } else {
-                println!("{row} calc: {calc_crc_val} exp: {crc_packed}");
             }
         }
     }
@@ -144,7 +141,7 @@ pub fn find_crc_from_varying(varying_bitstrs: Vec<Bitstream>) -> Result<CrcResul
         ))
     }
 }
-/// Construct candidate CRCs. Will try construct all (4) combinations of refin and refout
+/// Construct candidate CRCs. Will construct all (4) combinations of refin and refout
 fn construct_crc(
     bitmat: &BitMatrix,
     sample: &Bitstream,
@@ -172,7 +169,7 @@ fn construct_crc(
         if width != crc_width {
             continue; // polynomial is the wrong width -skip
         }
-        let xor_result = get_xor_val(sample, &polynomial, start_col, refin, refout)?;
+        let xor_result = get_xor_val(sample, &polynomial, start_col, refin, refout);
         crc_results.push(CrcResult {
             start_col,
             width,
@@ -185,6 +182,7 @@ fn construct_crc(
     }
     Ok(crc_results)
 }
+/// Do bit reflection in the matrix (for refin/refout cases)
 fn reflect_mat(mut bitmat: BitMatrix, start_col: usize, num_bits: usize) -> BitMatrix {
     for row in 0..bitmat.num_rows() {
         let refl_data = reflect_vec(&bitmat[row][start_col..start_col + num_bits]);
@@ -203,6 +201,7 @@ fn reflect_vec(data: &[u8]) -> Vec<u8> {
         data.into_iter().rev().copied().collect::<Vec<_>>()
     }
 }
+/// Reverse bit order of the low `width` bits of `val` (for implementing refout)
 fn reflect_bits(val: u128, width: usize) -> u128 {
     (0..width).fold(0u128, |acc, i| acc | (((val >> i) & 1) << (width - 1 - i)))
 }
@@ -243,13 +242,7 @@ fn crc_zero_init(poly: &[u8], data_vec: &[u8], refin: bool, refout: bool) -> u12
 /// function. It encapsulates any initial value and final XOR value that may be used in the
 /// original CRC protocol. (also depends on the data length - this will only be valid for
 /// bitstreams of the same length)
-fn get_xor_val(
-    bs: &Bitstream,
-    poly: &[u8],
-    start_col: usize,
-    refin: bool,
-    refout: bool,
-) -> Result<u128, BitkitError> {
+fn get_xor_val(bs: &Bitstream, poly: &[u8], start_col: usize, refin: bool, refout: bool) -> u128 {
     let num_crc_bits = poly.len() - 1;
     let bits = bs.bits_as_bytes();
     let data_vec: Vec<u8> = bits[..start_col]
@@ -264,7 +257,7 @@ fn get_xor_val(
             acc | ((bit as u128) << (num_crc_bits - 1 - ii))
         }); // make sure to order MSB
     let linear = crc_zero_init(poly, &data_vec, refin, refout);
-    Ok(crc_packed ^ linear)
+    crc_packed ^ linear
 }
 #[cfg(test)]
 mod tests {
@@ -272,7 +265,6 @@ mod tests {
     use crate::from_txt;
     fn test_crc(bitstrs: &[Bitstream], expected_poly: u128) {
         let result = find_crc(&bitstrs).unwrap();
-        println!("{:?}", result);
         assert_eq!(poly_to_u128(&result.crc_polynomial), expected_poly);
         // this uses the full bitstrs, will need to update if we add any tests that have fixed
         // preambles
@@ -306,7 +298,6 @@ mod tests {
     #[ignore]
     #[test]
     fn test_crc_usb5_header() {
-        println!("{}", 27 ^ 16);
         // refin=true refout=true, nonzero init and xorout, not byte aligned (11 bits)
         let bitstrs = from_txt("./tests/test_bits_crc5usb.txt").unwrap();
         test_crc(&bitstrs, 0x5);
