@@ -187,8 +187,12 @@ impl BitMatrix {
         result
     } // reduced row echelon form
     /// Find the nullspace basis vectors
-    pub fn nullspace(self) -> Self {
-        let reduced = if self.is_rref { self } else { self.rref() };
+    pub fn nullspace(&self) -> Self {
+        let reduced = if self.is_rref {
+            self.clone()
+        } else {
+            self.clone().rref()
+        };
         let pivot_locs: Vec<_> = (0..reduced.num_rows())
             .map(|ii| (ii, reduced[ii].iter().position(|&x| x == 1)))
             .collect();

@@ -16,7 +16,6 @@ doc = false
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
-crcany = "0.0.2"
 quick-xml = { version = "0.41.0", features = ["serialize"] }
 rayon = "1.12.0"
 serde = { version = "1.0.228", features = ["derive"] }
