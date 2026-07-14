@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use rf_bitkit::crc::find_crc;
 use rf_bitkit::proto::{ProtoField, ProtocolStructure};
 use rf_bitkit::{
     find_common_prefix, from_txt, from_urh, get_alphabet_counts, get_cross_correlation,
@@ -60,6 +61,8 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         skip: usize,
     },
+    /// Detect CRC polynomial, location, and parameters
+    Crc { file: String },
     /// Cross-correlate two bitstreams from a file by index
     Correlate {
         file: String,
@@ -224,6 +227,25 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             for (substr, ct) in sorted.iter().take(top) {
                 println!("{:<16}  {:>8}", substr, ct);
             }
+        }
+
+        Commands::Crc { file } => {
+            let bitstrs = load_file(&file)?;
+            let result = find_crc(&bitstrs)?;
+            let poly_val: u128 = result.crc_polynomial[..result.crc_polynomial.len() - 1]
+                .iter()
+                .enumerate()
+                .fold(0u128, |acc, (i, &b)| acc | ((b as u128) << i));
+            println!("=== CRC: {file} ===");
+            println!();
+            println!("Polynomial:  0x{poly_val:x} ({}-bit)", result.width);
+            println!("Location:    bit {} in varying bits", result.start_col);
+            println!("refin:       {}", result.refin);
+            println!("refout:      {}", result.refout);
+            println!("xor_val:     0x{:x}", result.xor_val);
+            println!("Score:       {:.1}%", result.score * 100.0);
+            println!();
+            println!("Note: location is relative to varying bits only (fixed prefix stripped).");
         }
 
         Commands::Correlate { file, a, b, top } => {

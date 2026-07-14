@@ -2,7 +2,7 @@
 
 A Rust library and CLI tool for reverse engineering RF protocols.
 
-I wrote this after finding URH's protocol analysis tab a little clunky and limited. rf-bitkit provides a collection of analysis functions for working with demodulated bitstreams - finding fixed and varying fields, identifying symbol alphabets, measuring entropy, and correlating captures. It accepts plain text files (one bitstream per line) or XML exports directly from URH.
+I wrote this after finding URH's protocol analysis tab a little clunky and limited. rf-bitkit provides a collection of analysis functions for working with demodulated bitstreams - finding fixed and varying fields, detecting CRC/checksum fields, identifying symbol alphabets, measuring entropy, and correlating captures. It accepts plain text files (one bitstream per line) or XML exports directly from URH.
 
 ## Installation
 
@@ -73,6 +73,12 @@ Cross-correlate two bitstreams from a file by index. Useful for identifying misa
 bitkit correlate <file> -a <index> -b <index> [-t <top>]
 ```
 
+### `crc`
+Detect the CRC polynomial, bit location, reflection parameters, and XOR constant across a set of captures. Uses GF(2) linear algebra to recover the generator polynomial without any prior knowledge of the CRC scheme.
+```
+bitkit crc <file>
+```
+
 ## Library
 
 rf-bitkit is also a Rust library. Add it to your `Cargo.toml`:
@@ -92,13 +98,13 @@ Key functions:
 - `get_cross_correlation` — cross-correlate two bitstreams across all offsets
 - `get_hamming_dist` — compute Hamming distance between two bitstreams
 - `find_common_prefix` — find the longest prefix shared by all bitstreams
+- `crc::find_crc` — recover CRC polynomial, location, refin/refout, and XOR constant from a set of bitstreams; returns a `crc::CrcResult`
 
 ## Status and Roadmap
 
 This is an early release. Current planned work includes:
 
 - Sync word detection in the presence of misaligned packets (cross-correlation is implemented; evaluating Smith-Waterman for handling bit insertions/deletions)
-- CRC/checksum detection
 - User-defined tags for labeling bitstream families (e.g. Frame A vs Frame B)
 - JSON/TOML config file support for scripting multi-step analyses
 - Visualizations
