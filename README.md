@@ -85,7 +85,7 @@ rf-bitkit is also a Rust library. Add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rf-bitkit = "0.1.0"
+rf-bitkit = "0.2.0"
 ```
 
 Key functions:
