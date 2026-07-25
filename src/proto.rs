@@ -107,6 +107,7 @@ impl ProtocolStructure {
     pub fn extract_varying_bits(&self, bs: &Bitstream) -> Result<String, BitkitError> {
         Ok(self.extract_varying(bs)?.0)
     }
+    /// Pull out the locations of the varying/ambiguous bits from a Bitstream
     pub fn extract_varying_locs(&self, bs: &Bitstream) -> Result<Vec<usize>, BitkitError> {
         Ok(self.extract_varying(bs)?.1)
     }
@@ -127,6 +128,49 @@ impl ProtocolStructure {
             match field {
                 ProtoField::Fixed => idx_ctr += count,
                 ProtoField::Ambiguous | ProtoField::Varying => {
+                    for idx in idx_ctr..idx_ctr + count {
+                        locs.push(idx as usize);
+                    }
+                    idx_ctr += count;
+                }
+            } // end match
+        }
+        Ok((
+            locs.iter()
+                .map(|&ii| {
+                    let bit = bs.bit_at(ii);
+                    if bit == 1 {
+                        '1'
+                    } else {
+                        '0'
+                    }
+                })
+                .collect::<String>(),
+            locs,
+        ))
+    }
+    /// Pull out only the ambiguous bits from a Bitstream
+    pub fn extract_ambiguous_bits(&self, bs: &Bitstream) -> Result<String, BitkitError> {
+        Ok(self.extract_ambiguous(bs)?.0)
+    }
+    /// Extract only the ambiguous bits/locs - positions of low, but not zero entropy.
+    /// Could be useful for clustering or identifying different devices
+    fn extract_ambiguous(&self, bs: &Bitstream) -> Result<(String, Vec<usize>), BitkitError> {
+        if bs.len() != self.get_num_bits() {
+            return Err(BitkitError::LengthMismatch(bs.len(), self.get_num_bits()));
+        }
+        let num_varying: u32 = self
+            .summarize()
+            .iter()
+            .filter(|(fd, _)| **fd == ProtoField::Ambiguous)
+            .map(|(_, ct)| ct)
+            .sum();
+        let mut locs: Vec<usize> = Vec::with_capacity(num_varying as usize);
+        let mut idx_ctr = 0;
+        for (field, count) in self.get_fields().iter() {
+            match field {
+                ProtoField::Fixed | ProtoField::Varying => idx_ctr += count,
+                ProtoField::Ambiguous => {
                     for idx in idx_ctr..idx_ctr + count {
                         locs.push(idx as usize);
                     }

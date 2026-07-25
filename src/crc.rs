@@ -135,6 +135,7 @@ pub fn find_crc_from_varying(varying_bitstrs: Vec<Bitstream>) -> Result<CrcResul
             }
         }
     }
+    // TODO - handle cases of ties - maybe return both?
     if let Ok(mut best) = cands
         .into_iter()
         .max_by_key(|cand| cand.score as u32)

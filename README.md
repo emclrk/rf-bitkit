@@ -23,8 +23,13 @@ cargo install --path .
 ```
 $ bitkit infer my_captures.txt
 
+H(1/N) = 0.2145  (single-packet anomaly reference)
+
+Entropy profile:
+  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁████████████████▁▁▁▁▁▁▁▁
+
 Inferred Structure:
-  Fixed(3) | Varying(2) | Fixed(2) | Varying(2) | Fixed(2) | Varying(2) | Fixed(1)
+  Fixed(32) | Varying(16, H:0.92–1.00) | Fixed(8)
 ```
 
 ## CLI Tool
@@ -38,9 +43,9 @@ bitkit info <file> [-s <symlen>] [--skip <n>]
 ```
 
 ### `infer`
-Compute positionwise entropy and infer the protocol field structure. This is the key command — given a series of bitstreams, it identifies which bit positions are fixed across all captures and which vary.
+Compute positionwise entropy and infer the protocol field structure. This is the key command — given a series of bitstreams, it identifies which bit positions are fixed across all captures and which vary. Output includes a sparkline entropy profile, per-field entropy ranges in the structure annotation, and a reference entropy value `H(1/N)` marking the threshold at which a single packet differs from all others. Use `--verbose` for the full per-position entropy table.
 ```
-bitkit infer <file> [--eps <tolerance>]
+bitkit infer <file> [--eps <tolerance>] [--verbose]
 ```
 
 ### `prefix`

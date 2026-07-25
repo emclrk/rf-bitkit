@@ -5,6 +5,7 @@ use rf_bitkit::{
     find_common_prefix, from_txt, from_urh, get_alphabet_counts, get_cross_correlation,
     get_substr_counts, positionwise_entropy, BitkitError, Bitstream,
 };
+use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Parser)]
@@ -32,6 +33,9 @@ enum Commands {
         /// Entropy tolerance: positions with entropy <= eps are marked ambiguous
         #[arg(long)]
         eps: Option<f32>,
+        /// Print full per-position entropy table
+        #[arg(long)]
+        verbose: bool,
     },
     /// Show normalized entropy at each symbol length to help infer symbol size
     Sweep {
@@ -93,6 +97,33 @@ fn field_name(ft: &ProtoField) -> &'static str {
     }
 }
 
+fn sparkline(ents: &[f32]) -> String {
+    const BLOCKS: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    ents.iter()
+        .map(|&e| BLOCKS[((e * 7.0).round() as usize).min(7)])
+        .collect()
+}
+
+fn annotated_structure(fields: &[(ProtoField, u32)], ents: &[f32]) -> String {
+    let mut parts = Vec::new();
+    let mut offset = 0;
+    for (ft, count) in fields {
+        let n = *count as usize;
+        let field_ents = &ents[offset..offset + n];
+        offset += n;
+        let s = match ft {
+            ProtoField::Fixed => format!("Fixed({n})"),
+            _ => {
+                let min_e = field_ents.iter().cloned().fold(f32::INFINITY, f32::min);
+                let max_e = field_ents.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                format!("{}({n}, H:{min_e:.2}–{max_e:.2})", field_name(ft))
+            }
+        };
+        parts.push(s);
+    }
+    parts.join(" | ")
+}
+
 fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
@@ -134,7 +165,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             }
         }
 
-        Commands::Infer { file, eps } => {
+        Commands::Infer { file, eps, verbose } => {
             let bitstrs = load_file(&file)?;
             let ents = positionwise_entropy(&bitstrs);
             let ps = match eps {
@@ -144,27 +175,55 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
 
             println!("=== Protocol Structure: {file} ===");
             println!();
-            println!("Positionwise Entropy:");
-            for (i, e) in ents.iter().enumerate() {
-                println!("  [{i:3}] {e:.4}");
+
+            let p = 1.0 / bitstrs.len() as f32;
+            let hx = -p * p.log2() - (1_f32 - p) * (1_f32 - p).log2();
+            println!("H(1/N) = {hx:.4}  (single-packet anomaly reference)");
+            println!();
+
+            println!("Entropy profile:");
+            println!("  {}", sparkline(&ents));
+            println!();
+
+            if verbose {
+                println!("Positionwise Entropy:");
+                for (i, e) in ents.iter().enumerate() {
+                    println!("  [{i:3}] {e:.4}");
+                }
+                println!();
             }
-            println!();
+
             let fields = ps.get_fields();
-            let structure_str = fields
-                .iter()
-                .map(|(ft, ct)| format!("{}({ct})", field_name(ft)))
-                .collect::<Vec<_>>()
-                .join(" | ");
             println!("Inferred Structure:");
-            println!("  {structure_str}");
+            println!("  {}", annotated_structure(&fields, &ents));
             println!();
+
             let summary = ps.summarize();
+            if summary[&ProtoField::Ambiguous] > 0 {
+                let mut ambiguous_strs: HashMap<String, u32> = HashMap::new();
+                for bs in bitstrs.iter() {
+                    ambiguous_strs
+                        .entry(ps.extract_ambiguous_bits(bs).unwrap())
+                        .and_modify(|ct| *ct += 1)
+                        .or_insert(1);
+                }
+                let mut sorted: Vec<_> = ambiguous_strs.iter().collect();
+                sorted.sort_by(|a, b| b.1.cmp(a.1));
+                println!("Ambiguous bit patterns:");
+                for (pattern, ct) in &sorted {
+                    println!("  {pattern}  ×{ct}");
+                }
+                println!();
+            }
+
             println!("Summary:");
-            println!("  Fixed:   {} bits", summary[&ProtoField::Fixed]);
-            println!("  Varying: {} bits", summary[&ProtoField::Varying]);
+            println!("  Bitstream samples: {}", bitstrs.len());
+            println!("  Fixed:     {} bits", summary[&ProtoField::Fixed]);
+            println!("  Varying:   {} bits", summary[&ProtoField::Varying]);
             if summary[&ProtoField::Ambiguous] > 0 {
                 println!("  Ambiguous: {} bits", summary[&ProtoField::Ambiguous]);
             }
+            println!("  Total:     {} bits", summary.values().sum::<u32>());
         }
 
         Commands::Sweep {
