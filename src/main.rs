@@ -116,7 +116,7 @@ fn sparkline(ents: &[f32]) -> String {
         .collect()
 }
 
-fn annotated_structure(fields: &[(ProtoField, u32)], ents: &[f32]) -> String {
+fn annotated_structure(fields: &[(ProtoField, usize)], ents: &[f32]) -> String {
     let mut parts = Vec::new();
     let mut offset = 0;
     for (ft, count) in fields {
@@ -201,7 +201,7 @@ fn do_infer(
     if summary[&ProtoField::Ambiguous] > 0 {
         println!("  Ambiguous: {} bits", summary[&ProtoField::Ambiguous]);
     }
-    println!("  Total:     {} bits", summary.values().sum::<u32>());
+    println!("  Total:     {} bits", summary.values().sum::<usize>());
 }
 
 fn main() {
@@ -369,23 +369,72 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
 
         Commands::Crc { file } => {
             let bitstrs = load_file(&file)?;
-            let result = find_crc(&bitstrs)?;
-            let poly_val: u128 = result.crc_polynomial[..result.crc_polynomial.len() - 1]
-                .iter()
-                .enumerate()
-                .fold(0u128, |acc, (i, &b)| acc | ((b as u128) << i));
-            println!("=== CRC: {file} ===");
-            println!();
-            println!("Polynomial:  0x{poly_val:x} ({}-bit)", result.width);
-            println!(
-                "Location:    bit {} in frame (0-indexed)",
-                result.frame_start_col
-            );
-            println!("refin:       {}", result.refin);
-            println!("refout:      {}", result.refout);
-            println!("xor_val:     0x{:x}", result.xor_val);
-            println!("Score:       {:.1}%", result.score * 100.0);
-            println!();
+            match find_crc(&bitstrs) {
+                Ok(result) => {
+                    let poly_val: u128 = result.crc_polynomial[..result.crc_polynomial.len() - 1]
+                        .iter()
+                        .enumerate()
+                        .fold(0u128, |acc, (i, &b)| acc | ((b as u128) << i));
+                    println!("=== CRC: {file} ===");
+                    println!();
+                    println!("Polynomial:  0x{poly_val:x} ({}-bit)", result.width);
+                    println!(
+                        "Location:    bit {} in frame (0-indexed)",
+                        result.frame_start_col
+                    );
+                    println!("refin:       {}", result.refin);
+                    println!("refout:      {}", result.refout);
+                    println!("xor_val:     0x{:x}", result.xor_val);
+                    println!("Score:       {:.1}%", result.score * 100.0);
+                    println!();
+                }
+                Err(BitkitError::CrcFieldDiscontinuity(rank_results, ps)) => {
+                    const BLOCKS: &[char] = &['_', '▄', '█'];
+                    // let mut col_idx: usize = 0;
+                    let mut rank_idx: usize = 0;
+                    let mut graph: Vec<char> = Vec::with_capacity(rank_results.len());
+                    let mut prev = rank_results[0];
+                    for (field, size) in ps.get_fields() {
+                        match field {
+                            ProtoField::Fixed => {
+                                for _ in 0..size {
+                                    graph.push(BLOCKS[0]);
+                                }
+                                // col_idx += size;
+                            }
+                            ProtoField::Varying | ProtoField::Ambiguous => {
+                                for _ in 0..size {
+                                    if rank_results[rank_idx].rank > prev.rank || rank_idx == 0 {
+                                        graph.push(BLOCKS[2]);
+                                    } else {
+                                        graph.push(BLOCKS[1]);
+                                    }
+                                    prev = rank_results[rank_idx];
+                                    rank_idx += 1;
+                                    // col_idx += 1;
+                                }
+                            }
+                        }
+                    }
+                    println!(
+                        "Rank graph - {} = fixed, {} = independent, {} = dependent\n",
+                        BLOCKS[0], BLOCKS[2], BLOCKS[1]
+                    );
+                    let graph_str = graph.iter().collect::<String>();
+                    let chunk_len = 64;
+                    for (ii, chunk) in graph_str
+                        .chars()
+                        .collect::<Vec<_>>()
+                        .chunks(chunk_len)
+                        .enumerate()
+                    {
+                        let pos = ii * chunk_len;
+                        let chunk_str: String = chunk.iter().collect();
+                        println!("[{pos:3}]   {chunk_str}");
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         Commands::Correlate { file, a, b, top } => {

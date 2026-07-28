@@ -10,7 +10,7 @@ pub enum ProtoField {
     Fixed,
     Varying,
     Ambiguous,
-    // TODO: Repeat(u32, Box<ProtoField>) or similar
+    // TODO: Repeat(usize, Box<ProtoField>) or similar
 }
 /// A struct representation of the protocol structure. `protocol` is a listing of the protocol
 /// fields and the number of bits in each field in order.
@@ -18,14 +18,14 @@ pub enum ProtoField {
 /// num_bits is the total number of bits in the protocol
 #[derive(Debug)]
 pub struct ProtocolStructure {
-    protocol: Vec<(ProtoField, u32)>,
+    protocol: Vec<(ProtoField, usize)>,
     num_fields: usize,
     num_bits: usize,
 }
 
 impl ProtocolStructure {
     /// Get the vector of protocol fields
-    pub fn get_fields(&self) -> Vec<(ProtoField, u32)> {
+    pub fn get_fields(&self) -> Vec<(ProtoField, usize)> {
         self.protocol.clone()
     }
     /// Number of entries in the protocol vector
@@ -48,7 +48,7 @@ impl ProtocolStructure {
     /// entropy larger than epsilon become varying fields; bit positions with an entropy between
     /// zero and the provided epsilon are marked "ambiguous."
     pub fn infer_structure_tolerance(poswise_ents: &[f32], eps: f32) -> Self {
-        let mut fields: Vec<(ProtoField, u32)> = vec![];
+        let mut fields: Vec<(ProtoField, usize)> = vec![];
         if poswise_ents.is_empty() {
             return ProtocolStructure {
                 protocol: fields,
@@ -64,7 +64,7 @@ impl ProtocolStructure {
         } else {
             ProtoField::Varying
         };
-        let mut count: u32 = 0;
+        let mut count: usize = 0;
         for ent in poswise_ents {
             let ent_type = if *ent == 0.0 {
                 ProtoField::Fixed
@@ -92,7 +92,7 @@ impl ProtocolStructure {
         }
     }
     /// Returns a summary in a HashMap with the count of each type of field
-    pub fn summarize(&self) -> HashMap<ProtoField, u32> {
+    pub fn summarize(&self) -> HashMap<ProtoField, usize> {
         let mut summary = HashMap::from([
             (ProtoField::Fixed, 0),
             (ProtoField::Varying, 0),
@@ -116,7 +116,7 @@ impl ProtocolStructure {
         if bs.len() != self.get_num_bits() {
             return Err(BitkitError::LengthMismatch(bs.len(), self.get_num_bits()));
         }
-        let num_varying: u32 = self
+        let num_varying: usize = self
             .summarize()
             .iter()
             .filter(|(fd, _)| **fd == ProtoField::Varying || **fd == ProtoField::Ambiguous)
@@ -159,7 +159,7 @@ impl ProtocolStructure {
         if bs.len() != self.get_num_bits() {
             return Err(BitkitError::LengthMismatch(bs.len(), self.get_num_bits()));
         }
-        let num_varying: u32 = self
+        let num_varying: usize = self
             .summarize()
             .iter()
             .filter(|(fd, _)| **fd == ProtoField::Ambiguous)

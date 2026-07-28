@@ -9,15 +9,18 @@ use rayon::prelude::*;
 /// `diff` : the difference between the width of the window and the rank of the matrix. diff=0 means
 ///          full rank, diff>0 signals probable CRC bit(s) entering the window
 #[derive(Debug, PartialEq, Clone, Copy)]
-struct RankResult {
-    rank: usize,
-    width: usize,
-    diff: usize,
+pub struct RankResult {
+    pub rank: usize,
+    pub width: usize,
+    pub diff: usize,
 }
 /// CrcResult - parameters of the found CRC
-/// `start_col` - the first bit column of the CRC
+/// `frame_start_col` - firs bit column of the CRC within the overall frame
+/// `start_col` - the first bit column of the CRC within the varying bits
 /// `width` - number of bits in the CRC
 /// `xor_val` - value to XOR with the result of crc_zero_init
+/// `refin` - reflect in
+/// `refout` - reflect out
 /// `crc_polynomial` - the found CRC generator polynomial
 #[derive(Debug, PartialEq)]
 pub struct CrcResult {
@@ -50,13 +53,16 @@ pub fn find_crc(bitstrs: &[Bitstream]) -> Result<CrcResult, BitkitError> {
         .map(|bs| ps.extract_varying_bits(bs).and_then(Bitstream::new))
         .collect::<Result<Vec<_>, _>>()?;
     let varying_locs = ps.extract_varying_locs(&bitstrs[0])?;
-    let mut crc_result = find_crc_from_varying(varying_bitstrs)?;
+    let mut crc_result = find_crc_from_varying(varying_bitstrs, ps)?;
     crc_result.frame_start_col = varying_locs[crc_result.start_col];
     Ok(crc_result)
 }
 /// Do the actual work to find the CRC. Expects a slice of Bitstreams composed of only the varying
 /// bits from the protocol.
-pub fn find_crc_from_varying(varying_bitstrs: Vec<Bitstream>) -> Result<CrcResult, BitkitError> {
+pub fn find_crc_from_varying(
+    varying_bitstrs: Vec<Bitstream>,
+    ps: ProtocolStructure,
+) -> Result<CrcResult, BitkitError> {
     // XORing to remove any affine element (eg if the CRC was initialized or XOR'd by a constant)
     let orig_bitmat = BitMatrix::new(&varying_bitstrs)?;
     let mut bitmat = orig_bitmat.clone();
@@ -81,18 +87,19 @@ pub fn find_crc_from_varying(varying_bitstrs: Vec<Bitstream>) -> Result<CrcResul
     }
     // For now, we're doing an exhaustive search, fully aware that this is dumb, but at least it's
     // threaded. We don't want to miss it if it's in weird place.
-    let mut rank_drop: Vec<RankResult> = (1..=bitmat.num_cols())
+    let mut rank: Vec<RankResult> = (1..=bitmat.num_cols())
         .into_par_iter()
         .map(|width| {
-            let rank = bitmat.window(0, width).unwrap().mat_rank();
+            let rk = bitmat.window(0, width).unwrap().mat_rank();
             RankResult {
-                rank,
+                rank: rk,
                 width,
-                diff: width - rank,
+                diff: width - rk,
             }
         })
-        .filter(|res| res.diff > 0)
         .collect();
+    rank.sort_by_key(|r| r.width);
+    let mut rank_drop: Vec<_> = rank.iter().filter(|res| res.diff > 0).collect();
     if rank_drop.is_empty() {
         let error_msg =
             String::from("No rank drop detected - no CRC present or maybe insufficient data");
@@ -103,11 +110,9 @@ pub fn find_crc_from_varying(varying_bitstrs: Vec<Bitstream>) -> Result<CrcResul
     // Check for contiguous CRC bits
     for entry in &rank_drop[1..] {
         if entry.width != prev.width + 1 || entry.rank != prev.rank {
-            return Err(BitkitError::MiscellaneousError(
-                "Candidate CRC fields are NOT contiguous. Either something unexpected is going on\
-                (weird data) or the CRC is interleaved or something. More investigation needed."
-                    .to_string(),
-            ));
+            // Candidate CRC fields are NOT contiguous. Either something unexpected is going on
+            // (weird data) or the CRC is interleaved or something. More investigation needed.
+            return Err(BitkitError::CrcFieldDiscontinuity(rank, ps));
         }
         prev = *entry;
     }

@@ -89,6 +89,9 @@ pub enum BitkitError {
     #[error("Dimension error: {0}x{1} * {2}x{3}")]
     MatrixMultDimError(usize, usize, usize, usize),
 
+    #[error("CRC Field Discontinuity")]
+    CrcFieldDiscontinuity(Vec<crc::RankResult>, proto::ProtocolStructure),
+
     #[error("{0}")]
     MiscellaneousError(String),
 }
