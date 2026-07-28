@@ -390,9 +390,10 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 }
                 Err(BitkitError::CrcFieldDiscontinuity(rank_results, ps)) => {
                     const BLOCKS: &[char] = &['_', '▄', '█'];
-                    // let mut col_idx: usize = 0;
+                    let mut col_idx: usize = 0;
                     let mut rank_idx: usize = 0;
                     let mut graph: Vec<char> = Vec::with_capacity(rank_results.len());
+                    let mut dependent: Vec<usize> = vec![];
                     let mut prev = rank_results[0];
                     for (field, size) in ps.get_fields() {
                         match field {
@@ -400,7 +401,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                                 for _ in 0..size {
                                     graph.push(BLOCKS[0]);
                                 }
-                                // col_idx += size;
+                                col_idx += size;
                             }
                             ProtoField::Varying | ProtoField::Ambiguous => {
                                 for _ in 0..size {
@@ -408,10 +409,11 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                                         graph.push(BLOCKS[2]);
                                     } else {
                                         graph.push(BLOCKS[1]);
+                                        dependent.push(col_idx);
                                     }
                                     prev = rank_results[rank_idx];
                                     rank_idx += 1;
-                                    // col_idx += 1;
+                                    col_idx += 1;
                                 }
                             }
                         }
@@ -431,6 +433,10 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                         let pos = ii * chunk_len;
                         let chunk_str: String = chunk.iter().collect();
                         println!("[{pos:3}]   {chunk_str}");
+                    }
+                    println!("Locations of dependent columns:");
+                    for chunk in dependent.chunks(chunk_len) {
+                        println!("{:?}", chunk.iter().collect::<Vec<_>>());
                     }
                 }
                 Err(e) => return Err(e),
