@@ -92,6 +92,9 @@ pub enum BitkitError {
     #[error("CRC Field Discontinuity")]
     CrcFieldDiscontinuity(Vec<crc::RankResult>, proto::ProtocolStructure),
 
+    #[error("No CRC found")]
+    NoCrcFound,
+
     #[error("{0}")]
     MiscellaneousError(String),
 }

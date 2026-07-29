@@ -78,7 +78,13 @@ enum Commands {
         skip: usize,
     },
     /// Detect CRC polynomial, location, and parameters
-    Crc { file: String },
+    Crc {
+        file: String,
+        #[arg(long)]
+        max_iters: Option<usize>,
+        #[arg(long)]
+        sample_size: Option<usize>,
+    },
     /// Cross-correlate two bitstreams from a file by index
     Correlate {
         file: String,
@@ -120,15 +126,14 @@ fn annotated_structure(fields: &[(ProtoField, usize)], ents: &[f32]) -> String {
     let mut parts = Vec::new();
     let mut offset = 0;
     for (ft, count) in fields {
-        let n = *count as usize;
-        let field_ents = &ents[offset..offset + n];
-        offset += n;
+        let field_ents = &ents[offset..offset + count];
+        offset += count;
         let s = match ft {
-            ProtoField::Fixed => format!("Fixed({n})"),
+            ProtoField::Fixed => format!("Fixed({count})"),
             _ => {
                 let min_e = field_ents.iter().cloned().fold(f32::INFINITY, f32::min);
                 let max_e = field_ents.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                format!("{}({n}, H:{min_e:.2}–{max_e:.2})", field_name(ft))
+                format!("{}({count}, H:{min_e:.2}–{max_e:.2})", field_name(ft))
             }
         };
         parts.push(s);
@@ -367,9 +372,13 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             }
         }
 
-        Commands::Crc { file } => {
+        Commands::Crc {
+            file,
+            max_iters,
+            sample_size,
+        } => {
             let bitstrs = load_file(&file)?;
-            match find_crc(&bitstrs) {
+            match find_crc(&bitstrs, max_iters.unwrap_or(10), sample_size) {
                 Ok(result) => {
                     let poly_val: u128 = result.crc_polynomial[..result.crc_polynomial.len() - 1]
                         .iter()

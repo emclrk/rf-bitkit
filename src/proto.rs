@@ -16,7 +16,7 @@ pub enum ProtoField {
 /// fields and the number of bits in each field in order.
 /// num_fields is the number of entries in the `protocol` vector
 /// num_bits is the total number of bits in the protocol
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProtocolStructure {
     protocol: Vec<(ProtoField, usize)>,
     num_fields: usize,
@@ -103,6 +103,14 @@ impl ProtocolStructure {
         }
         summary
     }
+    /// Number of varying fields in the protocol
+    pub fn get_num_varying(&self) -> usize {
+        self.summarize()
+            .iter()
+            .filter(|(fd, _)| **fd == ProtoField::Varying || **fd == ProtoField::Ambiguous)
+            .map(|(_, ct)| ct)
+            .sum()
+    }
     /// Pull out only the varying/ambiguous bits from a Bitstream
     pub fn extract_varying_bits(&self, bs: &Bitstream) -> Result<String, BitkitError> {
         Ok(self.extract_varying(bs)?.0)
@@ -116,12 +124,7 @@ impl ProtocolStructure {
         if bs.len() != self.get_num_bits() {
             return Err(BitkitError::LengthMismatch(bs.len(), self.get_num_bits()));
         }
-        let num_varying: usize = self
-            .summarize()
-            .iter()
-            .filter(|(fd, _)| **fd == ProtoField::Varying || **fd == ProtoField::Ambiguous)
-            .map(|(_, ct)| ct)
-            .sum();
+        let num_varying: usize = self.get_num_varying();
         let mut locs: Vec<usize> = Vec::with_capacity(num_varying as usize);
         let mut idx_ctr = 0;
         for (field, count) in self.get_fields().iter() {

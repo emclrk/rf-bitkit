@@ -1,7 +1,9 @@
 use crate::linalg::{berlekamp_massey, BitMatrix};
 use crate::proto::ProtocolStructure;
 use crate::{positionwise_entropy, BitkitError, Bitstream};
+use rand::prelude::*;
 use rayon::prelude::*;
+use std::cmp::{max, min};
 
 /// RankResult - result of the windowed rank analysis.
 /// `rank` : the row rank of the windowed matrix
@@ -22,7 +24,7 @@ pub struct RankResult {
 /// `refin` - reflect in
 /// `refout` - reflect out
 /// `crc_polynomial` - the found CRC generator polynomial
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct CrcResult {
     pub frame_start_col: usize,
     pub start_col: usize,
@@ -31,11 +33,23 @@ pub struct CrcResult {
     pub refin: bool,
     pub refout: bool,
     pub score: f32,
+    pub ransac_score: usize,
     pub crc_polynomial: Vec<u8>,
 }
+impl CrcResult {
+    /// Compare two Crc results for equivalency (ignore score fields)
+    fn equivalent(&self, other: &CrcResult) -> bool {
+        self.frame_start_col == other.frame_start_col
+            && self.start_col == other.start_col
+            && self.width == other.width
+            && self.xor_val == other.xor_val
+            && self.refin == other.refin
+            && self.refout == other.refout
+            && self.crc_polynomial == other.crc_polynomial
+    }
+}
 /// Find the CRC in the Bitstreams, if present, and the location of the CRC bits in the protocol.
-/// Assumptions: Bitstreams are aligned correctly, each one is the same length, **the bitstreams are
-/// noiseless** (will implement improvements to loosen that requirement later) and there are enough
+/// Assumptions: Bitstreams are aligned correctly, each one is the same length, and there are enough
 /// Bitstreams to reveal the CRC. That exact requirement is tricky to define precisely without
 /// knowing how many data bits are in the stream, but if there are fewer samples than data bits in
 /// the stream we won't be able to find CRC because we won't have enough degrees of freedom to
@@ -43,25 +57,79 @@ pub struct CrcResult {
 /// samples is too low, but a lack of an error is not a guarantee that there are enough Bitstreams.
 /// That said, if there are at least as many Bitstreams as there are varying bits in the protocol,
 /// that should be enough (although it's better to have more for a safe cushion).
-pub fn find_crc(bitstrs: &[Bitstream]) -> Result<CrcResult, BitkitError> {
+/// At the moment we're also assuming that the packet payload strictly precedes the CRC bits and
+/// there is only one CRC in the packet.
+pub fn find_crc(
+    bitstrs: &[Bitstream],
+    max_iters: usize,
+    sample_size: Option<usize>,
+) -> Result<CrcResult, BitkitError> {
     if bitstrs.is_empty() {
         return Err(BitkitError::EmptyVec);
     }
     let ps = ProtocolStructure::infer_structure(&positionwise_entropy(bitstrs));
+    // Use sample size if given. If not, it should be at least a little more than the number of
+    // varying bits, but no less than 20, and no more than the # of the bitstrs (if # of bistrs
+    // is the limiting factor, it'll most likely fail
+    // down the line anyway)
+    let k_samples: usize = match sample_size {
+        Some(ss) => ss,
+        None => min(
+            max((ps.get_num_varying() as f32 * 1.2) as usize, 20),
+            bitstrs.len(),
+        ),
+    };
     let varying_bitstrs: Vec<Bitstream> = bitstrs
         .iter()
         .map(|bs| ps.extract_varying_bits(bs).and_then(Bitstream::new))
         .collect::<Result<Vec<_>, _>>()?;
     let varying_locs = ps.extract_varying_locs(&bitstrs[0])?;
-    let mut crc_result = find_crc_from_varying(varying_bitstrs, ps)?;
-    crc_result.frame_start_col = varying_locs[crc_result.start_col];
-    Ok(crc_result)
+    let mut rng = rand::rng();
+    let mut candidates: Vec<Result<CrcResult, BitkitError>> = Vec::with_capacity(max_iters);
+    // Try several times, with different random samples, and return the result with the highest
+    // score
+    for _ in 0..max_iters {
+        let rand_sample: Vec<_> = varying_bitstrs
+            .sample(&mut rng, k_samples)
+            .cloned()
+            .collect();
+        match find_crc_from_varying(rand_sample, &ps) {
+            Ok(mut crc_result) => {
+                crc_result.frame_start_col = varying_locs[crc_result.start_col];
+                if let Some(Ok(existing)) = candidates
+                    .iter_mut()
+                    .find(|r| r.as_ref().is_ok_and(|cand| cand.equivalent(&crc_result)))
+                {
+                    existing.score = f32::max(existing.score, crc_result.score);
+                    existing.ransac_score += 1;
+                } else {
+                    candidates.push(Ok(crc_result));
+                }
+            }
+            Err(e) => candidates.push(Err(e)),
+        };
+    }
+    // return candidate with best score
+    match candidates
+        .iter()
+        .filter_map(|a| a.as_ref().ok())
+        .max_by(|a, b| {
+            a.score
+                .total_cmp(&b.score)
+                .then_with(|| a.ransac_score.cmp(&b.ransac_score))
+        }) {
+        Some(res) => Ok(res.clone()),
+        None => Err(candidates
+            .into_iter()
+            .find_map(|r| r.err())
+            .unwrap_or(BitkitError::NoCrcFound)),
+    }
 }
 /// Do the actual work to find the CRC. Expects a slice of Bitstreams composed of only the varying
 /// bits from the protocol.
 pub fn find_crc_from_varying(
     varying_bitstrs: Vec<Bitstream>,
-    ps: ProtocolStructure,
+    ps: &ProtocolStructure,
 ) -> Result<CrcResult, BitkitError> {
     // XORing to remove any affine element (eg if the CRC was initialized or XOR'd by a constant)
     let orig_bitmat = BitMatrix::new(&varying_bitstrs)?;
@@ -112,7 +180,7 @@ pub fn find_crc_from_varying(
         if entry.width != prev.width + 1 || entry.rank != prev.rank {
             // Candidate CRC fields are NOT contiguous. Either something unexpected is going on
             // (weird data) or the CRC is interleaved or something. More investigation needed.
-            return Err(BitkitError::CrcFieldDiscontinuity(rank, ps));
+            return Err(BitkitError::CrcFieldDiscontinuity(rank, ps.clone()));
         }
         prev = *entry;
     }
@@ -190,6 +258,7 @@ fn construct_crc(
             xor_val: xor_result,
             refin,
             refout,
+            ransac_score: 1,
             score: 0f32,
             crc_polynomial: polynomial,
         });
@@ -207,7 +276,7 @@ fn reflect_mat(mut bitmat: BitMatrix, start_col: usize, num_bits: usize) -> BitM
 /// Reflect the bits in the data vector. If data is byte aligned, each byte will be individually
 /// reflected; if not (as in, say, CRC-5/USB header), the entire thing will be reflected.
 fn reflect_vec(data: &[u8]) -> Vec<u8> {
-    if data.len() % 8 == 0 {
+    if data.len() * 8 == 0 {
         data.chunks(8)
             .flat_map(|chunk| chunk.iter().rev().copied())
             .collect::<Vec<_>>()
@@ -310,6 +379,16 @@ mod tests {
     fn test_crc_interlaken() {
         // refin=false refout=false, nonzero init and xorout
         let bitstrs = from_txt("./tests/test_bits_interlaken.txt").unwrap();
+        let result = test_crc(&bitstrs, 0x3);
+        assert_eq!(result.frame_start_col, 16);
+        assert_eq!(result.start_col, 16);
+    }
+    #[test]
+    fn test_crc_interlaken_corrupted() {
+        let mut bitstrs = from_txt("./tests/test_bits_interlaken.txt").unwrap();
+        let mut byte_vec = bitstrs[0].bitstring().into_bytes();
+        byte_vec[3] ^= 1;
+        bitstrs[0] = Bitstream::new(String::from_utf8(byte_vec).unwrap()).unwrap();
         let result = test_crc(&bitstrs, 0x3);
         assert_eq!(result.frame_start_col, 16);
         assert_eq!(result.start_col, 16);
