@@ -276,12 +276,12 @@ fn reflect_mat(mut bitmat: BitMatrix, start_col: usize, num_bits: usize) -> BitM
 /// Reflect the bits in the data vector. If data is byte aligned, each byte will be individually
 /// reflected; if not (as in, say, CRC-5/USB header), the entire thing will be reflected.
 fn reflect_vec(data: &[u8]) -> Vec<u8> {
-    if data.len() * 8 == 0 {
+    if data.len().is_multiple_of(8) {
         data.chunks(8)
             .flat_map(|chunk| chunk.iter().rev().copied())
             .collect::<Vec<_>>()
     } else {
-        data.into_iter().rev().copied().collect::<Vec<_>>()
+        data.iter().rev().copied().collect::<Vec<_>>()
     }
 }
 /// Reverse bit order of the low `width` bits of `val` (for implementing refout)
@@ -299,7 +299,7 @@ fn poly_to_u128(poly: &[u8]) -> u128 {
 /// CRC of our polynomial on a data frame with zero-state input
 fn crc_zero_init(poly: &[u8], data_vec: &[u8], refin: bool, refout: bool) -> u128 {
     let width = poly.len() - 1;
-    let poly_mask = poly_to_u128(&poly);
+    let poly_mask = poly_to_u128(poly);
     let mask: u128 = (1u128 << width) - 1;
     let bits: Vec<u8> = if refin {
         reflect_vec(data_vec)

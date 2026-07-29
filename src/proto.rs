@@ -88,7 +88,7 @@ impl ProtocolStructure {
         ProtocolStructure {
             protocol: fields,
             num_fields: field_count,
-            num_bits: bit_count as usize,
+            num_bits: bit_count,
         }
     }
     /// Returns a summary in a HashMap with the count of each type of field
@@ -125,14 +125,14 @@ impl ProtocolStructure {
             return Err(BitkitError::LengthMismatch(bs.len(), self.get_num_bits()));
         }
         let num_varying: usize = self.get_num_varying();
-        let mut locs: Vec<usize> = Vec::with_capacity(num_varying as usize);
+        let mut locs: Vec<usize> = Vec::with_capacity(num_varying);
         let mut idx_ctr = 0;
         for (field, count) in self.get_fields().iter() {
             match field {
                 ProtoField::Fixed => idx_ctr += count,
                 ProtoField::Ambiguous | ProtoField::Varying => {
                     for idx in idx_ctr..idx_ctr + count {
-                        locs.push(idx as usize);
+                        locs.push(idx);
                     }
                     idx_ctr += count;
                 }
@@ -168,14 +168,14 @@ impl ProtocolStructure {
             .filter(|(fd, _)| **fd == ProtoField::Ambiguous)
             .map(|(_, ct)| ct)
             .sum();
-        let mut locs: Vec<usize> = Vec::with_capacity(num_varying as usize);
+        let mut locs: Vec<usize> = Vec::with_capacity(num_varying);
         let mut idx_ctr = 0;
         for (field, count) in self.get_fields().iter() {
             match field {
                 ProtoField::Fixed | ProtoField::Varying => idx_ctr += count,
                 ProtoField::Ambiguous => {
                     for idx in idx_ctr..idx_ctr + count {
-                        locs.push(idx as usize);
+                        locs.push(idx);
                     }
                     idx_ctr += count;
                 }
