@@ -23,6 +23,9 @@ cargo install --path .
 ```
 $ bitkit infer my_captures.txt
 
+=== Protocol Structure: my_captures.txt ===
+
+Min varying entropy: 0.9153
 H(1/N) = 0.2145  (single-packet anomaly reference)
 
 Entropy profile:
@@ -39,13 +42,15 @@ The `bitkit` binary provides the following subcommands. All commands accept eith
 ### `info`
 Show basic stats and a hex representation of each bitstream.
 ```
-bitkit info <file> [-s <symlen>] [--skip <n>]
+bitkit info <file> [-s <symlen>] [--skip <n>] [--verbose]
 ```
 
 ### `infer`
-Compute positionwise entropy and infer the protocol field structure. This is the key command — given a series of bitstreams, it identifies which bit positions are fixed across all captures and which vary. Output includes a sparkline entropy profile, per-field entropy ranges in the structure annotation, and a reference entropy value `H(1/N)` marking the threshold at which a single packet differs from all others. Use `--verbose` for the full per-position entropy table.
+Compute positionwise entropy and infer the protocol field structure. This is the key command — given a series of bitstreams, it identifies which bit positions are fixed across all captures and which vary. Output includes a sparkline entropy profile, per-field entropy ranges in the structure annotation, a reference entropy value `H(1/N)` marking the threshold at which a single packet differs from all others, and a histogram of ambiguous bit patterns (low-but-nonzero entropy positions that often indicate device IDs or transmitter-specific fields). Use `--verbose` for the full per-position entropy table.
+
+Use `--eps` to set a tolerance for classifying ambiguous bits. Use `--cluster-min-size N` with `--eps` to split the capture into clusters by ambiguous bit pattern and run `infer` on each cluster separately — useful when the capture contains mixed message types or multiple transmitters. `--write-clusters` saves each cluster to a separate file for further analysis.
 ```
-bitkit infer <file> [--eps <tolerance>] [--verbose]
+bitkit infer <file> [--eps <tolerance>] [--verbose] [--cluster-min-size <n>] [--write-clusters]
 ```
 
 ### `prefix`
@@ -79,9 +84,9 @@ bitkit correlate <file> -a <index> -b <index> [-t <top>]
 ```
 
 ### `crc`
-Detect the CRC polynomial, bit location, reflection parameters, and XOR constant across a set of captures. Uses GF(2) linear algebra to recover the generator polynomial without any prior knowledge of the CRC scheme.
+Detect the CRC polynomial, bit location, reflection parameters, and XOR constant across a set of captures. Uses GF(2) linear algebra to recover the generator polynomial without any prior knowledge of the CRC scheme. Uses RANSAC — each iteration draws a random subsample of frames, which provides resilience against a small number of corrupted or malformed packets. Output includes the number of RANSAC iterations that agreed on the result. Use `--max-iters` to control the number of iterations (default 10) and `--sample-size` to fix the subsample size.
 ```
-bitkit crc <file>
+bitkit crc <file> [--max-iters <n>] [--sample-size <n>]
 ```
 
 ## Library
@@ -90,7 +95,7 @@ rf-bitkit is also a Rust library. Add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rf-bitkit = "0.2.1"
+rf-bitkit = "0.2.2"
 ```
 
 Key functions:
