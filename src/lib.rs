@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use thiserror::Error;
+pub mod cluster;
 pub mod crc;
 pub mod linalg;
 pub mod proto;
@@ -88,6 +89,12 @@ pub enum BitkitError {
     #[error("Dimension error: {0}x{1} * {2}x{3}")]
     MatrixMultDimError(usize, usize, usize, usize),
 
+    #[error("CRC Field Discontinuity")]
+    CrcFieldDiscontinuity(Vec<crc::RankResult>, proto::ProtocolStructure),
+
+    #[error("No CRC found")]
+    NoCrcFound,
+
     #[error("{0}")]
     MiscellaneousError(String),
 }
@@ -110,6 +117,9 @@ impl Bitstream {
                 .filter(|chr| !chr.is_whitespace())
                 .collect::<String>(),
         })
+    }
+    pub fn bitstring(&self) -> String {
+        self.bits.to_string()
     }
     pub fn skip(&self, nbits: usize) -> Self {
         Self::new(self.bits[nbits..].to_string()).unwrap()

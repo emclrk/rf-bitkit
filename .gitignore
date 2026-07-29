@@ -4,5 +4,4 @@ Cargo.lock
 *.xml
 *.txt
 gen.rs
-*.py
-*.cf32
+devtools/
