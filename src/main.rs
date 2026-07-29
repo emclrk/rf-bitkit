@@ -147,7 +147,7 @@ fn do_infer(
     ps: &ProtocolStructure,
     verbose: bool,
     label: &str,
-) {
+) -> Result<(), BitkitError> {
     println!("=== Protocol Structure: {label} ===");
     println!();
 
@@ -186,7 +186,7 @@ fn do_infer(
         let mut ambiguous_strs: HashMap<String, u32> = HashMap::new();
         for bs in bitstrs.iter() {
             ambiguous_strs
-                .entry(ps.extract_ambiguous_bits(bs).unwrap())
+                .entry(ps.extract_ambiguous_bits(bs)?)
                 .and_modify(|ct| *ct += 1)
                 .or_insert(1);
         }
@@ -207,6 +207,7 @@ fn do_infer(
         println!("  Ambiguous: {} bits", summary[&ProtoField::Ambiguous]);
     }
     println!("  Total:     {} bits", summary.values().sum::<usize>());
+    Ok(())
 }
 
 fn main() {
@@ -272,17 +273,17 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                         0 => bmap.iter().collect(),
                         _ => bmap
                             .iter()
-                            .filter(|(_key, val)| val.len() > min_size)
+                            .filter(|(_key, val)| val.len() >= min_size)
                             .collect(),
                     };
                     for (key, cluster) in clusters {
-                        let copied: Vec<Bitstream> = cluster.iter().copied().cloned().collect();
+                        let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
                         if write_clusters {
                             let path = Path::new(&file);
                             let parent = path.parent().unwrap_or(Path::new("."));
                             let stem = path.file_stem().unwrap().to_str().unwrap();
                             let outfile = parent.join(format!("{stem}_{key}_eps-{eval}.txt"));
-                            let mut fout = File::create(&outfile).unwrap();
+                            let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
                             for bs in copied.iter() {
                                 writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
                             }
@@ -294,7 +295,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                         }
                         let ents = positionwise_entropy(&copied);
                         let ps = ProtocolStructure::infer_structure_tolerance(&ents, eval);
-                        do_infer(&copied, &ents, &ps, verbose, key);
+                        do_infer(&copied, &ents, &ps, verbose, key)?;
                     }
                 } else {
                     return Err(BitkitError::MiscellaneousError(String::from(
@@ -307,7 +308,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                     Some(e) => ProtocolStructure::infer_structure_tolerance(&ents, e),
                     None => ProtocolStructure::infer_structure(&ents),
                 };
-                do_infer(&bitstrs, &ents, &ps, verbose, &file);
+                do_infer(&bitstrs, &ents, &ps, verbose, &file)?;
             }
         }
         Commands::Sweep {
@@ -378,7 +379,8 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             sample_size,
         } => {
             let bitstrs = load_file(&file)?;
-            match find_crc(&bitstrs, max_iters.unwrap_or(10), sample_size) {
+            let num_iters = max_iters.unwrap_or(10);
+            match find_crc(&bitstrs, Some(num_iters), sample_size) {
                 Ok(result) => {
                     let poly_val: u128 = result.crc_polynomial[..result.crc_polynomial.len() - 1]
                         .iter()
@@ -395,6 +397,10 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                     println!("refout:      {}", result.refout);
                     println!("xor_val:     0x{:x}", result.xor_val);
                     println!("Score:       {:.1}%", result.score * 100.0);
+                    println!(
+                        "Poly found:  {}/{num_iters} iterations",
+                        result.ransac_score
+                    );
                     println!();
                 }
                 Err(BitkitError::CrcFieldDiscontinuity(rank_results, ps)) => {
@@ -427,6 +433,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                             }
                         }
                     }
+                    println!("No CRC found in {num_iters} iterations.");
                     println!(
                         "Rank graph - {} = fixed, {} = independent, {} = dependent\n",
                         BLOCKS[0], BLOCKS[2], BLOCKS[1]

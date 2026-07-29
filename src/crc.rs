@@ -5,6 +5,8 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use std::cmp::{max, min};
 
+const MAX_ITERS: usize = 10;
+
 /// RankResult - result of the windowed rank analysis.
 /// `rank` : the row rank of the windowed matrix
 /// `width`: the width of the windowed matrix (going from index=0 to index=width - 1)
@@ -61,13 +63,17 @@ impl CrcResult {
 /// there is only one CRC in the packet.
 pub fn find_crc(
     bitstrs: &[Bitstream],
-    max_iters: usize,
+    max_iters: Option<usize>,
     sample_size: Option<usize>,
 ) -> Result<CrcResult, BitkitError> {
     if bitstrs.is_empty() {
         return Err(BitkitError::EmptyVec);
     }
     let ps = ProtocolStructure::infer_structure(&positionwise_entropy(bitstrs));
+    let num_iters: usize = match max_iters {
+        Some(mi) => mi,
+        None => MAX_ITERS,
+    };
     // Use sample size if given. If not, it should be at least a little more than the number of
     // varying bits, but no less than 20, and no more than the # of the bitstrs (if # of bistrs
     // is the limiting factor, it'll most likely fail
@@ -85,10 +91,10 @@ pub fn find_crc(
         .collect::<Result<Vec<_>, _>>()?;
     let varying_locs = ps.extract_varying_locs(&bitstrs[0])?;
     let mut rng = rand::rng();
-    let mut candidates: Vec<Result<CrcResult, BitkitError>> = Vec::with_capacity(max_iters);
+    let mut candidates: Vec<Result<CrcResult, BitkitError>> = Vec::with_capacity(num_iters);
     // Try several times, with different random samples, and return the result with the highest
     // score
-    for _ in 0..max_iters {
+    for _ in 0..num_iters {
         let rand_sample: Vec<_> = varying_bitstrs
             .sample(&mut rng, k_samples)
             .cloned()
@@ -346,8 +352,8 @@ fn get_xor_val(bs: &Bitstream, poly: &[u8], start_col: usize, refin: bool, refou
 mod tests {
     use super::*;
     use crate::from_txt;
-    fn test_crc(bitstrs: &[Bitstream], expected_poly: u128) -> CrcResult {
-        let result = find_crc(&bitstrs).unwrap();
+    fn test_crc(bitstrs: &[Bitstream], expected_poly: u128, max_iters: Option<usize>) -> CrcResult {
+        let result = find_crc(&bitstrs, max_iters, None).unwrap();
         let ps = ProtocolStructure::infer_structure(&positionwise_entropy(bitstrs));
         let varying_locs = ps.extract_varying_locs(&bitstrs[0]).unwrap();
         assert_eq!(poly_to_u128(&result.crc_polynomial), expected_poly);
@@ -379,7 +385,7 @@ mod tests {
     fn test_crc_interlaken() {
         // refin=false refout=false, nonzero init and xorout
         let bitstrs = from_txt("./tests/test_bits_interlaken.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3);
+        let result = test_crc(&bitstrs, 0x3, Some(MAX_ITERS));
         assert_eq!(result.frame_start_col, 16);
         assert_eq!(result.start_col, 16);
     }
@@ -389,7 +395,7 @@ mod tests {
         let mut byte_vec = bitstrs[0].bitstring().into_bytes();
         byte_vec[3] ^= 1;
         bitstrs[0] = Bitstream::new(String::from_utf8(byte_vec).unwrap()).unwrap();
-        let result = test_crc(&bitstrs, 0x3);
+        let result = test_crc(&bitstrs, 0x3, Some(50));
         assert_eq!(result.frame_start_col, 16);
         assert_eq!(result.start_col, 16);
     }
@@ -398,7 +404,7 @@ mod tests {
         // like above, but with a 5-bit preamble - make sure it still works and brings back the right
         // location
         let bitstrs = from_txt("./tests/test_bits_interlaken_preamble.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3);
+        let result = test_crc(&bitstrs, 0x3, Some(MAX_ITERS));
         assert_eq!(result.frame_start_col, 21);
         assert_eq!(result.start_col, 16);
     }
@@ -407,26 +413,26 @@ mod tests {
     fn test_crc_usb5_header() {
         // refin=true refout=true, nonzero init and xorout, not byte aligned (11 bits)
         let bitstrs = from_txt("./tests/test_bits_crc5usb.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x5);
+        let _ = test_crc(&bitstrs, 0x5, Some(MAX_ITERS));
     }
     #[test]
     fn test_crc_7mmc() {
         // byte-aligned, refin=false/refout=false, no init or xorout
         let bitstrs = from_txt("./tests/test_bits_crc7mmc.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x9);
+        let _ = test_crc(&bitstrs, 0x9, Some(MAX_ITERS));
     }
     #[test]
     fn test_crc_8_bluetooth() {
         // refin=true and refout=true, byte aligned
         let bitstrs = from_txt("./tests/test_bits_crc8bt.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0xa7);
+        let _ = test_crc(&bitstrs, 0xa7, Some(MAX_ITERS));
     }
     #[ignore]
     #[test]
     fn test_crc_12umts() {
         // refin=false, refout=true, crc_width=12 (%8!=0)
         let bitstrs = from_txt("./tests/test_bits_crc12umts.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x80f);
+        let _ = test_crc(&bitstrs, 0x80f, Some(MAX_ITERS));
     }
     #[test]
     fn test_reflect() {
