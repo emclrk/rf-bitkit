@@ -90,7 +90,7 @@ pub enum BitkitError {
     MatrixMultDimError(usize, usize, usize, usize),
 
     #[error("CRC Field Discontinuity")]
-    CrcFieldDiscontinuity(Vec<crc::RankResult>, proto::ProtocolStructure),
+    CrcFieldDiscontinuity(Vec<linalg::RankResult>, proto::ProtocolStructure),
 
     #[error("No CRC found")]
     NoCrcFound,

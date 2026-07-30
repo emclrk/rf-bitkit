@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use rf_bitkit::cluster::cluster_by_ambiguous_bits;
-use rf_bitkit::crc::{find_crc, windowed_rank, RankResult};
-use rf_bitkit::linalg::BitMatrix;
+use rf_bitkit::crc::find_crc;
+use rf_bitkit::linalg::{windowed_rank, BitMatrix, RankResult};
 use rf_bitkit::proto::{ProtoField, ProtocolStructure};
 use rf_bitkit::{
     find_common_prefix, from_txt, from_urh, get_alphabet_counts, get_cross_correlation,

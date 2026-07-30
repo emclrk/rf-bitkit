@@ -1,23 +1,11 @@
-use crate::linalg::{berlekamp_massey, BitMatrix};
+use crate::linalg::{berlekamp_massey, windowed_rank, BitMatrix};
 use crate::proto::ProtocolStructure;
 use crate::{positionwise_entropy, BitkitError, Bitstream};
 use rand::prelude::*;
-use rayon::prelude::*;
 use std::cmp::{max, min};
 
 const MAX_ITERS: usize = 10;
 
-/// RankResult - result of the windowed rank analysis.
-/// `rank` : the row rank of the windowed matrix
-/// `width`: the width of the windowed matrix (going from index=0 to index=width - 1)
-/// `diff` : the difference between the width of the window and the rank of the matrix. diff=0 means
-///          full rank, diff>0 signals probable CRC bit(s) entering the window
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub struct RankResult {
-    pub rank: usize,
-    pub width: usize,
-    pub diff: usize,
-}
 /// CrcResult - parameters of the found CRC
 /// `frame_start_col` - firs bit column of the CRC within the overall frame
 /// `start_col` - the first bit column of the CRC within the varying bits
@@ -130,25 +118,6 @@ pub fn find_crc(
             .find_map(|r| r.err())
             .unwrap_or(BitkitError::NoCrcFound)),
     }
-}
-/// Find the rank in a left-to-right growing window across the BitMatrix. The rank at each position
-/// is the rank of the matrix up to and including that column.
-pub fn windowed_rank(bitmat: &BitMatrix) -> Vec<RankResult> {
-    // For now, we're doing an exhaustive search, fully aware that this is dumb, but at least it's
-    // threaded. We don't want to miss it if it's in weird place.
-    let mut rank: Vec<RankResult> = (1..=bitmat.num_cols())
-        .into_par_iter()
-        .map(|width| {
-            let rk = bitmat.window(0, width).unwrap().mat_rank();
-            RankResult {
-                rank: rk,
-                width,
-                diff: width - rk,
-            }
-        })
-        .collect();
-    rank.sort_by_key(|r| r.width);
-    rank
 }
 /// Do the actual work to find the CRC. Expects a slice of Bitstreams composed of only the varying
 /// bits from the protocol.

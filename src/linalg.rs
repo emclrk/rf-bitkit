@@ -1,6 +1,19 @@
 use crate::{BitkitError, Bitstream};
+use rayon::prelude::*;
 use std::fmt;
 use std::ops::{Index, IndexMut, Mul};
+
+/// RankResult - result of the windowed rank analysis.
+/// `rank` : the row rank of the windowed matrix
+/// `width`: the width of the windowed matrix (going from index=0 to index=width - 1)
+/// `diff` : the difference between the width of the window and the rank of the matrix. diff=0 means
+///          full rank, diff>0 signals probable CRC bit(s) entering the window
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct RankResult {
+    pub rank: usize,
+    pub width: usize,
+    pub diff: usize,
+}
 
 /// Matrix of bits. Each row is a Bitstream. It's assumed that all Bitstreams are of the same
 /// length.
@@ -263,6 +276,26 @@ impl Mul for &BitMatrix {
     fn mul(self, rhs: &BitMatrix) -> Self::Output {
         mat_mul_gf2(self, rhs)
     }
+}
+
+/// Find the rank in a left-to-right growing window across the BitMatrix. The rank at each position
+/// is the rank of the matrix up to and including that column.
+pub fn windowed_rank(bitmat: &BitMatrix) -> Vec<RankResult> {
+    // For now, we're doing an exhaustive search, fully aware that this is dumb, but at least it's
+    // threaded. We don't want to miss it if it's in weird place.
+    let mut rank: Vec<RankResult> = (1..=bitmat.num_cols())
+        .into_par_iter()
+        .map(|width| {
+            let rk = bitmat.window(0, width).unwrap().mat_rank();
+            RankResult {
+                rank: rk,
+                width,
+                diff: width - rk,
+            }
+        })
+        .collect();
+    rank.sort_by_key(|r| r.width);
+    rank
 }
 
 /// Compute the dot product of two vectors over GF(2). Add = XOR, mul = AND.
