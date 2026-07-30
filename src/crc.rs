@@ -133,7 +133,7 @@ pub fn find_crc(
 }
 /// Do the actual work to find the CRC. Expects a slice of Bitstreams composed of only the varying
 /// bits from the protocol.
-pub fn find_crc_from_varying(
+pub(crate) fn find_crc_from_varying(
     varying_bitstrs: Vec<Bitstream>,
     ps: &ProtocolStructure,
 ) -> Result<CrcResult, BitkitError> {

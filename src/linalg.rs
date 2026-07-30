@@ -6,10 +6,14 @@ use std::ops::{Index, IndexMut, Mul};
 /// length.
 #[derive(Debug, PartialEq, Clone)]
 pub struct BitMatrix {
-    bits: Vec<u8>,   // bit matrix, stored row-wise
-    num_rows: usize, // equivalent to column length
-    num_cols: usize, // equivalent to row length
-    is_rref: bool,   // bool - is this a reduced row echelon form matrix
+    /// bit matrix, stored row-wise
+    bits: Vec<u8>,
+    /// equivalent to column length
+    num_rows: usize,
+    /// equivalent to row length
+    num_cols: usize,
+    /// bool - is this a reduced row echelon form matrix
+    is_rref: bool,
 }
 
 impl BitMatrix {
@@ -262,7 +266,7 @@ impl Mul for &BitMatrix {
 }
 
 /// Compute the dot product of two vectors over GF(2). Add = XOR, mul = AND.
-pub fn dot_prod_gf2(vec1: &[u8], vec2: &[u8]) -> Result<u8, BitkitError> {
+pub(crate) fn dot_prod_gf2(vec1: &[u8], vec2: &[u8]) -> Result<u8, BitkitError> {
     if vec1.len() != vec2.len() {
         return Err(BitkitError::LengthMismatch(vec1.len(), vec2.len()));
     }
@@ -274,7 +278,7 @@ pub fn dot_prod_gf2(vec1: &[u8], vec2: &[u8]) -> Result<u8, BitkitError> {
 }
 
 /// Multiply two matrices over GF(2). Add = XOR, Mul = AND
-pub fn mat_mul_gf2(mat1: &BitMatrix, mat2: &BitMatrix) -> Result<BitMatrix, BitkitError> {
+pub(crate) fn mat_mul_gf2(mat1: &BitMatrix, mat2: &BitMatrix) -> Result<BitMatrix, BitkitError> {
     // sizes: nxm and mxk
     if mat1.num_cols != mat2.num_rows {
         return Err(BitkitError::MatrixMultDimError(
@@ -301,7 +305,7 @@ pub fn mat_mul_gf2(mat1: &BitMatrix, mat2: &BitMatrix) -> Result<BitMatrix, Bitk
 }
 
 /// Berlekamp-Massey algorithm
-pub fn berlekamp_massey(null_vec: &[u8]) -> Vec<u8> {
+pub(crate) fn berlekamp_massey(null_vec: &[u8]) -> Vec<u8> {
     if null_vec.is_empty() {
         // empty null vec --> LFSR of length 0 is represented by the trivial polynomial
         // w/no feedback taps

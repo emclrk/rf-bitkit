@@ -32,7 +32,16 @@ enum Commands {
     },
     /// Find the common prefix across all bitstreams (preamble candidate)
     Prefix { file: String },
-    /// Compute positionwise entropy and infer protocol field structure
+    /// Compute positionwise entropy and infer protocol field structure. Given a series of
+    /// bitstreams, it identifies which bit positions are fixed across all captures and which vary,
+    /// and how much they vary. Output includes a sparkline entropy profile, per-field entropy
+    /// ranges in the structure annotation, a reference entropy value `H(1/N)` marking the
+    /// threshold at which a single packet differs from all the others, and a histogram of
+    /// ambiguous bit patterns (low but nonzero entropy positions. They may indicate device IDs or
+    /// transmitter specific fields, or bit errors in fields that should be fixed. Provide --eps,
+    /// an epsilon value, to see ambiguous bit fields). The `--verbose` flag provides the full
+    /// per-position entropy table. Optionally, cluster by low-entropy bit positions and infer
+    /// structure on the clusters, which may help separate different emitters in the capture.
     Infer {
         file: String,
         /// Entropy tolerance: positions with entropy <= eps are marked ambiguous
@@ -49,7 +58,9 @@ enum Commands {
         #[arg(long)]
         write_clusters: bool,
     },
-    /// Show normalized entropy at each symbol length to help infer symbol size
+    /// Show normalized entropy at each symbol length to help infer symbol size. Look for a sudden
+    /// drop in entropy, which may indicate the chunking is aligning with the actual symbol
+    /// boundaries. (Note the entropy will tend to decrease with increasing symbol length).
     Sweep {
         file: String,
         #[arg(long, default_value_t = 8)]
@@ -57,7 +68,7 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         skip: usize,
     },
-    /// Show symbol alphabet and frequency counts across all bitstreams
+    /// Show symbol alphabet and frequency counts across all bitstreams at a given symbol length
     Alphabet {
         file: String,
         #[arg(short, long, default_value_t = 1)]
@@ -65,7 +76,7 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         skip: usize,
     },
-    /// Show the most frequent substrings of a given length
+    /// Show the most frequent substrings of a given length. Can help find sync word candidates.
     Substrings {
         file: String,
         /// Substring length
@@ -77,7 +88,9 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         skip: usize,
     },
-    /// Detect CRC polynomial, location, and parameters
+    /// Detect CRC polynomial, location, and parameters. CRC is found using linear algebra methods
+    /// over GF(2), and random sampling of the bitstreams is also used to protect against small
+    /// numbers of bit errors, which would break the linearity the method depends on.
     Crc {
         file: String,
         #[arg(long)]
@@ -85,7 +98,8 @@ enum Commands {
         #[arg(long)]
         sample_size: Option<usize>,
     },
-    /// Cross-correlate two bitstreams from a file by index
+    /// Cross-correlate two bitstreams from a file by index - may help identify misalignment
+    /// between captures
     Correlate {
         file: String,
         /// Index of the first bitstream

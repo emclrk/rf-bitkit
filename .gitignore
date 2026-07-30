@@ -2,6 +2,5 @@
 Cargo.lock
 *.swp
 *.xml
-*.txt
 gen.rs
 devtools/
