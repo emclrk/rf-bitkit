@@ -73,6 +73,7 @@ All commands operate on a .txt file (one bitstream per line) or a URH .xml proto
 |alphabet|show symbol alphabet and frequency counts across bitstreams|
 |substrings|show most common substrings of a given length|
 |correlate|cross-correlate 2 bitstreams from a file|
+|rank|show a left-to-right rank graph of the bitstream columns (w/affine element removed)|
 |crc|detect crc polynomial, bit location, and parameters|
 
 ## Library

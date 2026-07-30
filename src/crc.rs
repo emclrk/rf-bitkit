@@ -131,6 +131,25 @@ pub fn find_crc(
             .unwrap_or(BitkitError::NoCrcFound)),
     }
 }
+/// Find the rank in a left-to-right growing window across the BitMatrix. The rank at each position
+/// is the rank of the matrix up to and including that column.
+pub fn windowed_rank(bitmat: &BitMatrix) -> Vec<RankResult> {
+    // For now, we're doing an exhaustive search, fully aware that this is dumb, but at least it's
+    // threaded. We don't want to miss it if it's in weird place.
+    let mut rank: Vec<RankResult> = (1..=bitmat.num_cols())
+        .into_par_iter()
+        .map(|width| {
+            let rk = bitmat.window(0, width).unwrap().mat_rank();
+            RankResult {
+                rank: rk,
+                width,
+                diff: width - rk,
+            }
+        })
+        .collect();
+    rank.sort_by_key(|r| r.width);
+    rank
+}
 /// Do the actual work to find the CRC. Expects a slice of Bitstreams composed of only the varying
 /// bits from the protocol.
 pub(crate) fn find_crc_from_varying(
@@ -159,21 +178,8 @@ pub(crate) fn find_crc_from_varying(
         );
         return Err(BitkitError::MiscellaneousError(error_msg));
     }
-    // For now, we're doing an exhaustive search, fully aware that this is dumb, but at least it's
-    // threaded. We don't want to miss it if it's in weird place.
-    let mut rank: Vec<RankResult> = (1..=bitmat.num_cols())
-        .into_par_iter()
-        .map(|width| {
-            let rk = bitmat.window(0, width).unwrap().mat_rank();
-            RankResult {
-                rank: rk,
-                width,
-                diff: width - rk,
-            }
-        })
-        .collect();
-    rank.sort_by_key(|r| r.width);
-    let mut rank_drop: Vec<_> = rank.iter().filter(|res| res.diff > 0).collect();
+    let ranks = windowed_rank(&bitmat);
+    let mut rank_drop: Vec<_> = ranks.iter().filter(|res| res.diff > 0).collect();
     if rank_drop.is_empty() {
         let error_msg =
             String::from("No rank drop detected - no CRC present or maybe insufficient data");
@@ -186,7 +192,7 @@ pub(crate) fn find_crc_from_varying(
         if entry.width != prev.width + 1 || entry.rank != prev.rank {
             // Candidate CRC fields are NOT contiguous. Either something unexpected is going on
             // (weird data) or the CRC is interleaved or something. More investigation needed.
-            return Err(BitkitError::CrcFieldDiscontinuity(rank, ps.clone()));
+            return Err(BitkitError::CrcFieldDiscontinuity(ranks, ps.clone()));
         }
         prev = *entry;
     }
