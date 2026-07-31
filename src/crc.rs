@@ -7,23 +7,25 @@ use std::cmp::{max, min};
 const MAX_ITERS: usize = 10;
 
 /// CrcResult - parameters of the found CRC
-/// `frame_start_col` - firs bit column of the CRC within the overall frame
-/// `start_col` - the first bit column of the CRC within the varying bits
-/// `width` - number of bits in the CRC
-/// `xor_val` - value to XOR with the result of crc_zero_init
-/// `refin` - reflect in
-/// `refout` - reflect out
-/// `crc_polynomial` - the found CRC generator polynomial
 #[derive(Debug, PartialEq, Clone)]
 pub struct CrcResult {
+    /// `frame_start_col` - firs bit column of the CRC within the overall frame
     pub frame_start_col: usize,
+    /// `start_col` - the first bit column of the CRC within the varying bits
     pub start_col: usize,
+    /// `width` - number of bits in the CRC
     pub width: usize,
+    /// `xor_val` - value to XOR with the result of crc_zero_init
     pub xor_val: u128,
+    /// `refin` - reflect in
     pub refin: bool,
+    /// `refout` - reflect out
     pub refout: bool,
+    /// Score - % of ALL frames that support this CRC result
     pub score: f32,
+    /// Number of RANSAC iterations that chose this result
     pub ransac_score: usize,
+    /// `crc_polynomial` - the found CRC generator polynomial
     pub crc_polynomial: Vec<u8>,
 }
 impl CrcResult {
@@ -73,24 +75,14 @@ pub fn find_crc(
             bitstrs.len(),
         ),
     };
-    let varying_bitstrs: Vec<Bitstream> = bitstrs
-        .iter()
-        .map(|bs| ps.extract_varying_bits(bs).and_then(Bitstream::new))
-        .collect::<Result<Vec<_>, _>>()?;
-    let varying_locs = ps.extract_varying_locs(&bitstrs[0])?;
-    let all_bitmat = BitMatrix::new(&varying_bitstrs)?;
     let mut rng = rand::rng();
     let mut candidates: Vec<Result<CrcResult, BitkitError>> = Vec::with_capacity(num_iters);
     // Try several times, with different random samples, and return the result with the highest
     // score
     for _ in 0..num_iters {
-        let rand_sample: Vec<_> = varying_bitstrs
-            .sample(&mut rng, k_samples)
-            .cloned()
-            .collect();
-        match find_crc_from_varying(&all_bitmat, rand_sample, &ps) {
-            Ok(mut crc_result) => {
-                crc_result.frame_start_col = varying_locs[crc_result.start_col];
+        let rand_sample: Vec<_> = bitstrs.sample(&mut rng, k_samples).cloned().collect();
+        match find_crc_from_varying(bitstrs, rand_sample, &ps) {
+            Ok(crc_result) => {
                 if let Some(Ok(existing)) = candidates
                     .iter_mut()
                     .find(|r| r.as_ref().is_ok_and(|cand| cand.equivalent(&crc_result)))
@@ -123,24 +115,29 @@ pub fn find_crc(
 /// Do the actual work to find the CRC. Expects a slice of Bitstreams composed of only the varying
 /// bits from the protocol.
 pub(crate) fn find_crc_from_varying(
-    all_bitmat: &BitMatrix,
+    all_bitstrs: &[Bitstream],
     sampled_bitstrs: Vec<Bitstream>,
     ps: &ProtocolStructure,
 ) -> Result<CrcResult, BitkitError> {
     // XORing to remove any affine element (eg if the CRC was initialized or XOR'd by a constant)
-    let mut bitmat = BitMatrix::new(&sampled_bitstrs)?;
-    for ii in 1..bitmat.num_rows() {
-        for jj in 0..bitmat.num_cols() {
-            bitmat[ii][jj] ^= bitmat[0][jj];
+    let sampled_varying_bitstrs: Vec<Bitstream> = sampled_bitstrs
+        .iter()
+        .map(|bs| ps.extract_varying_bits(bs).and_then(Bitstream::new))
+        .collect::<Result<Vec<_>, _>>()?;
+    let all_bitmat = BitMatrix::new(all_bitstrs)?;
+    let mut varying_bitmat = BitMatrix::new(&sampled_varying_bitstrs)?;
+    for ii in 1..varying_bitmat.num_rows() {
+        for jj in 0..varying_bitmat.num_cols() {
+            varying_bitmat[ii][jj] ^= varying_bitmat[0][jj];
         }
     }
     // zero out this row - since it was xor'd with everything else it's no longer contributing to
     // the rowspace
-    for jj in 0..bitmat.num_cols() {
-        bitmat[0][jj] = 0;
+    for jj in 0..varying_bitmat.num_cols() {
+        varying_bitmat[0][jj] = 0;
     }
-    let base_rank = bitmat.mat_rank();
-    if base_rank == sampled_bitstrs.len() - 1 {
+    let base_rank = varying_bitmat.mat_rank();
+    if base_rank == sampled_varying_bitstrs.len() - 1 {
         let error_msg: String = format!(
             "Matrix rank {} is too low to detect CRC with linear algebra methods. \
                 More bitstream samples needed",
@@ -148,7 +145,7 @@ pub(crate) fn find_crc_from_varying(
         );
         return Err(BitkitError::MiscellaneousError(error_msg));
     }
-    let ranks = windowed_rank(&bitmat);
+    let ranks = windowed_rank(&varying_bitmat);
     let mut rank_drop: Vec<_> = ranks.iter().filter(|res| res.diff > 0).collect();
     if rank_drop.is_empty() {
         let error_msg =
@@ -166,20 +163,30 @@ pub(crate) fn find_crc_from_varying(
         }
         prev = *entry;
     }
-    // construct bitmat from the *found* potetntial crc locations
     let start_col = rank_drop[0].width - 1;
-    let crc_width = bitmat.num_cols() - base_rank;
-    let mut cands = construct_crc(&bitmat, &sampled_bitstrs[0], start_col, crc_width)?;
+    let crc_width = varying_bitmat.num_cols() - base_rank;
+    let mut cands = construct_crc(&varying_bitmat, start_col, crc_width)?;
+    let sample = sampled_bitstrs[0].clone(); // TODO...does it matter which one we use for finding xor val?
+    let varying_locs = ps.extract_varying_locs(&sample)?;
     // Score candidates
     for cand in cands.iter_mut() {
+        cand.frame_start_col = varying_locs[cand.start_col]; // update with location in frame
+        cand.xor_val = get_xor_val(
+            &sample,
+            &cand.crc_polynomial,
+            cand.frame_start_col,
+            cand.refin,
+            cand.refout,
+        );
         for row in 0..all_bitmat.num_rows() {
             let calc_crc_val = crc_zero_init(
                 &cand.crc_polynomial,
-                &all_bitmat[row][0..start_col],
+                &all_bitmat[row][0..cand.frame_start_col],
                 cand.refin,
                 cand.refout,
             );
-            let crc_packed = all_bitmat[row][start_col..start_col + crc_width]
+            let crc_packed = all_bitmat[row]
+                [cand.frame_start_col..cand.frame_start_col + crc_width]
                 .iter()
                 .enumerate()
                 .fold(0u128, |acc, (ii, &bit)| {
@@ -207,7 +214,6 @@ pub(crate) fn find_crc_from_varying(
 /// Construct candidate CRCs. Will construct all (4) combinations of refin and refout
 fn construct_crc(
     bitmat: &BitMatrix,
-    sample: &Bitstream,
     start_col: usize,
     crc_width: usize,
 ) -> Result<Vec<CrcResult>, BitkitError> {
@@ -229,12 +235,11 @@ fn construct_crc(
         let mut polynomial = g_mat[start_col - 1].to_vec();
         polynomial.reverse(); // MSB first in the matrix; needs to be LSB first
         polynomial.push(1); // add leading x^w term
-        let xor_result = get_xor_val(sample, &polynomial, start_col, refin, refout);
         crc_results.push(CrcResult {
             frame_start_col: start_col, // temporary - we dont have frame context here
             start_col,
             width: crc_width,
-            xor_val: xor_result,
+            xor_val: 0x0, // placeholder - this needs to be computed from a full frame
             refin,
             refout,
             ransac_score: 1,
@@ -327,13 +332,9 @@ mod tests {
     use crate::from_txt;
     fn test_crc(bitstrs: &[Bitstream], expected_poly: u128, max_iters: Option<usize>) -> CrcResult {
         let result = find_crc(&bitstrs, max_iters, None).unwrap();
-        let ps = ProtocolStructure::infer_structure(&positionwise_entropy(bitstrs));
-        let varying_locs = ps.extract_varying_locs(&bitstrs[0]).unwrap();
         assert_eq!(poly_to_u128(&result.crc_polynomial), expected_poly);
-        // this uses the full bitstrs, will need to update if we add any tests that have fixed
-        // preambles
         let bits = bitstrs[2].bits_as_bytes();
-        let data_vec: Vec<_> = bits[varying_locs[0]..result.frame_start_col]
+        let data_vec: Vec<_> = bits[0..result.frame_start_col]
             .iter()
             .chain(bits[result.frame_start_col + result.width..].iter())
             .copied()
