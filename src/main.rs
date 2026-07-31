@@ -104,6 +104,8 @@ enum Commands {
         max_iters: Option<usize>,
         #[arg(long)]
         sample_size: Option<usize>,
+        #[arg(long, num_args(1..))]
+        exclude_bits: Vec<usize>,
     },
     /// Cross-correlate two bitstreams from a file by index - may help identify misalignment
     /// between captures
@@ -463,10 +465,12 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             file,
             max_iters,
             sample_size,
+            exclude_bits,
         } => {
             let bitstrs = load_file(&file)?;
             let num_iters = max_iters.unwrap_or(10);
-            match find_crc(&bitstrs, Some(num_iters), sample_size) {
+            // todo - exclude_bits
+            match find_crc(&bitstrs, Some(num_iters), sample_size, &exclude_bits) {
                 Ok(result) => {
                     let poly_val: u128 = result.crc_polynomial[..result.crc_polynomial.len() - 1]
                         .iter()

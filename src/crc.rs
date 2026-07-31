@@ -55,6 +55,7 @@ pub fn find_crc(
     bitstrs: &[Bitstream],
     max_iters: Option<usize>,
     sample_size: Option<usize>,
+    exclude_bits: &[usize],
 ) -> Result<CrcResult, BitkitError> {
     if bitstrs.is_empty() {
         return Err(BitkitError::EmptyVec);
@@ -81,7 +82,7 @@ pub fn find_crc(
     // score
     for _ in 0..num_iters {
         let rand_sample: Vec<_> = bitstrs.sample(&mut rng, k_samples).cloned().collect();
-        match find_crc_from_varying(bitstrs, rand_sample, &ps) {
+        match find_crc_from_varying(bitstrs, rand_sample, &ps, exclude_bits) {
             Ok(crc_result) => {
                 if let Some(Ok(existing)) = candidates
                     .iter_mut()
@@ -118,11 +119,22 @@ pub(crate) fn find_crc_from_varying(
     all_bitstrs: &[Bitstream],
     sampled_bitstrs: Vec<Bitstream>,
     ps: &ProtocolStructure,
+    exclude_bits: &[usize],
 ) -> Result<CrcResult, BitkitError> {
-    let sampled_varying_bitstrs: Vec<Bitstream> = sampled_bitstrs
+    let mut sampled_varying_bitstrs: Vec<Bitstream> = sampled_bitstrs
         .iter()
         .map(|bs| ps.extract_varying_bits(bs).and_then(Bitstream::new))
         .collect::<Result<Vec<_>, _>>()?;
+    let varying_locs = ps.extract_varying_locs(&sampled_bitstrs[0])?;
+    let exclude_locs = exclude_bits
+        .iter()
+        .filter_map(|ii| varying_locs.iter().position(|val| val == ii))
+        .collect::<Vec<usize>>();
+    for bs in sampled_varying_bitstrs.iter_mut() {
+        for ii in exclude_locs.iter().rev() {
+            bs.remove_bit(*ii);
+        }
+    }
     let all_bitmat = BitMatrix::new(all_bitstrs)?;
     let mut varying_bitmat = BitMatrix::new(&sampled_varying_bitstrs)?;
     varying_bitmat.remove_affine();
@@ -157,10 +169,15 @@ pub(crate) fn find_crc_from_varying(
     let crc_width = varying_bitmat.num_cols() - base_rank;
     let mut cands = construct_crc(&varying_bitmat, start_col, crc_width)?;
     let sample = sampled_bitstrs[0].clone(); // TODO...does it matter which one we use for finding xor val?
-    let varying_locs = ps.extract_varying_locs(&sample)?;
+    let filtered_varying_locs: Vec<usize> = varying_locs
+        .iter()
+        .enumerate()
+        .filter(|(ii, _)| !exclude_locs.contains(ii))
+        .map(|(_, &loc)| loc)
+        .collect();
     // Score candidates
     for cand in cands.iter_mut() {
-        cand.frame_start_col = varying_locs[cand.start_col]; // update with location in frame
+        cand.frame_start_col = filtered_varying_locs[cand.start_col]; // update with location in frame
         cand.xor_val = get_xor_val(
             &sample,
             &cand.crc_polynomial,
@@ -320,8 +337,13 @@ fn get_xor_val(bs: &Bitstream, poly: &[u8], start_col: usize, refin: bool, refou
 mod tests {
     use super::*;
     use crate::from_txt;
-    fn test_crc(bitstrs: &[Bitstream], expected_poly: u128, max_iters: Option<usize>) -> CrcResult {
-        let result = find_crc(&bitstrs, max_iters, None).unwrap();
+    fn test_crc(
+        bitstrs: &[Bitstream],
+        expected_poly: u128,
+        max_iters: Option<usize>,
+        exclude_bits: &[usize],
+    ) -> CrcResult {
+        let result = find_crc(&bitstrs, max_iters, None, exclude_bits).unwrap();
         assert_eq!(poly_to_u128(&result.crc_polynomial), expected_poly);
         let bits = bitstrs[2].bits_as_bytes();
         let data_vec: Vec<_> = bits[0..result.frame_start_col]
@@ -349,7 +371,7 @@ mod tests {
     fn test_crc_interlaken() {
         // refin=false refout=false, nonzero init and xorout
         let bitstrs = from_txt("./tests/test_bits_interlaken.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(1));
+        let result = test_crc(&bitstrs, 0x3, Some(1), &[]);
         assert_eq!(result.frame_start_col, 16);
         assert_eq!(result.start_col, 16);
     }
@@ -359,7 +381,7 @@ mod tests {
         let mut byte_vec = bitstrs[0].bitstring().into_bytes();
         byte_vec[3] ^= 1;
         bitstrs[0] = Bitstream::new(String::from_utf8(byte_vec).unwrap()).unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(50));
+        let result = test_crc(&bitstrs, 0x3, Some(50), &[]);
         assert_eq!(result.frame_start_col, 16);
         assert_eq!(result.start_col, 16);
     }
@@ -368,7 +390,7 @@ mod tests {
         // like above, but with a 5-bit preamble - make sure it still works and brings back the right
         // location
         let bitstrs = from_txt("./tests/test_bits_interlaken_preamble.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(1));
+        let result = test_crc(&bitstrs, 0x3, Some(1), &[]);
         assert_eq!(result.frame_start_col, 21);
         assert_eq!(result.start_col, 16);
     }
@@ -377,26 +399,25 @@ mod tests {
     fn test_crc_usb5_header() {
         // refin=true refout=true, nonzero init and xorout, not byte aligned (11 bits)
         let bitstrs = from_txt("./tests/test_bits_crc5usb.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x5, Some(1));
+        let _ = test_crc(&bitstrs, 0x5, Some(1), &[]);
     }
     #[test]
     fn test_crc_7mmc() {
         // byte-aligned, refin=false/refout=false, no init or xorout
         let bitstrs = from_txt("./tests/test_bits_crc7mmc.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x9, Some(1));
+        let _ = test_crc(&bitstrs, 0x9, Some(1), &[]);
     }
     #[test]
     fn test_crc_8_bluetooth() {
         // refin=true and refout=true, byte aligned
         let bitstrs = from_txt("./tests/test_bits_crc8bt.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0xa7, Some(1));
+        let _ = test_crc(&bitstrs, 0xa7, Some(1), &[]);
     }
-    #[ignore]
     #[test]
     fn test_crc_12umts() {
         // refin=false, refout=true, crc_width=12 (%8!=0)
         let bitstrs = from_txt("./tests/test_bits_crc12umts.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x80f, Some(1));
+        let _ = test_crc(&bitstrs, 0x80f, Some(1), &[]);
     }
     #[test]
     fn test_reflect() {
@@ -415,5 +436,17 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(expected, reflect_mat(matrix, 0, 8));
+    }
+    #[test]
+    fn test_schrader_bitexclude() {
+        let bitstrs = from_txt("./tests/test_schrader_rtl433.txt").unwrap();
+        let err_result = find_crc(&bitstrs, None, None, &[]);
+        assert!(err_result.is_err());
+        assert!(matches!(
+            err_result,
+            Err(BitkitError::CrcFieldDiscontinuity(..))
+        ));
+        let exclude = vec![11];
+        let _ = test_crc(&bitstrs, 0x7, None, &exclude);
     }
 }
