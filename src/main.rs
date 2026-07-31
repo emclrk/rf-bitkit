@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use rf_bitkit::cluster::cluster_by_ambiguous_bits;
 use rf_bitkit::crc::find_crc;
+use rf_bitkit::linalg::{windowed_rank, BitMatrix, RankResult};
 use rf_bitkit::proto::{ProtoField, ProtocolStructure};
 use rf_bitkit::{
     find_common_prefix, from_txt, from_urh, get_alphabet_counts, get_cross_correlation,
@@ -88,15 +89,26 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         skip: usize,
     },
+    /// Print a graph of the rank of the matrix formed by the bitstreams. Columns are analyzed
+    /// *after* subtracting a reference row (XOR with first packet). The graph will show fixed
+    /// bit columns, independent, and dependent columns. Dependent columns in the graph are those
+    /// that are dependent on some combination of columns *preceding* it (that is, to the left).
+    /// This can help identify fields like flags, parity bits, and CRC fields.
+    Rank { file: String },
     /// Detect CRC polynomial, location, and parameters. CRC is found using linear algebra methods
-    /// over GF(2), and random sampling of the bitstreams is also used to protect against small
-    /// numbers of bit errors, which would break the linearity the method depends on.
+    /// over GF(2), and repeated random sampling of the bitstreams reduces the effect of spurious
+    /// linear dependencies and protects against small numbers of bit errors, which would break the
+    /// linearity the method depends on.
+    /// Use --exclude-bits to exclude known non-CRC dependent columns (flags, parity bits), which
+    /// can be identified by the rank graph.
     Crc {
         file: String,
         #[arg(long)]
         max_iters: Option<usize>,
         #[arg(long)]
         sample_size: Option<usize>,
+        #[arg(long, num_args(1..))]
+        exclude_bits: Vec<usize>,
     },
     /// Cross-correlate two bitstreams from a file by index - may help identify misalignment
     /// between captures
@@ -136,6 +148,58 @@ fn sparkline(ents: &[f32]) -> String {
         .collect()
 }
 
+fn print_rank_graph(rank_results: &[RankResult], ps: &ProtocolStructure) {
+    const BLOCKS: &[char] = &['_', '▄', '█'];
+    let mut rank_idx: usize = 0;
+    let mut graph: Vec<char> = Vec::with_capacity(rank_results.len());
+    let mut prev_rank = 0;
+    for (field, size) in ps.get_fields() {
+        match field {
+            ProtoField::Fixed => {
+                for _ in 0..size {
+                    graph.push(BLOCKS[0]);
+                }
+            }
+            ProtoField::Varying | ProtoField::Ambiguous => {
+                for _ in 0..size {
+                    if rank_results[rank_idx].rank > prev_rank {
+                        graph.push(BLOCKS[2]);
+                    } else {
+                        graph.push(BLOCKS[1]);
+                    }
+                    prev_rank = rank_results[rank_idx].rank;
+                    rank_idx += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "Rank graph - {} = fixed, {} = independent, {} = dependent\n",
+        BLOCKS[0], BLOCKS[2], BLOCKS[1]
+    );
+    let graph_str = graph.iter().collect::<String>();
+    let chunk_len = 64;
+    for (ii, chunk) in graph_str
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(chunk_len)
+        .enumerate()
+    {
+        let pos = ii * chunk_len;
+        let chunk_str: String = chunk.iter().collect();
+        println!("[{pos:3}]   {chunk_str}");
+    }
+    let dependent = graph
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| **x == BLOCKS[1])
+        .map(|(ii, _)| ii)
+        .collect::<Vec<_>>();
+    println!("Locations of dependent columns:");
+    for chunk in dependent.chunks(chunk_len) {
+        println!("{:?}", chunk.iter().collect::<Vec<_>>());
+    }
+}
 fn annotated_structure(fields: &[(ProtoField, usize)], ents: &[f32]) -> String {
     let mut parts = Vec::new();
     let mut offset = 0;
@@ -387,14 +451,29 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             }
         }
 
+        Commands::Rank { file } => {
+            let bitstrs = load_file(&file)?;
+            let ps = ProtocolStructure::infer_structure(&positionwise_entropy(&bitstrs));
+            let varying_bitstrs: Vec<Bitstream> = bitstrs
+                .iter()
+                .map(|bs| ps.extract_varying_bits(bs).and_then(Bitstream::new))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut bitmat = BitMatrix::new(&varying_bitstrs)?;
+            bitmat.remove_affine();
+            let ranks = windowed_rank(&bitmat);
+            print_rank_graph(&ranks, &ps);
+        }
+
         Commands::Crc {
             file,
             max_iters,
             sample_size,
+            exclude_bits,
         } => {
             let bitstrs = load_file(&file)?;
             let num_iters = max_iters.unwrap_or(10);
-            match find_crc(&bitstrs, Some(num_iters), sample_size) {
+            // todo - exclude_bits
+            match find_crc(&bitstrs, Some(num_iters), sample_size, &exclude_bits) {
                 Ok(result) => {
                     let poly_val: u128 = result.crc_polynomial[..result.crc_polynomial.len() - 1]
                         .iter()
@@ -418,56 +497,8 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                     println!();
                 }
                 Err(BitkitError::CrcFieldDiscontinuity(rank_results, ps)) => {
-                    const BLOCKS: &[char] = &['_', '▄', '█'];
-                    let mut col_idx: usize = 0;
-                    let mut rank_idx: usize = 0;
-                    let mut graph: Vec<char> = Vec::with_capacity(rank_results.len());
-                    let mut dependent: Vec<usize> = vec![];
-                    let mut prev = rank_results[0];
-                    for (field, size) in ps.get_fields() {
-                        match field {
-                            ProtoField::Fixed => {
-                                for _ in 0..size {
-                                    graph.push(BLOCKS[0]);
-                                }
-                                col_idx += size;
-                            }
-                            ProtoField::Varying | ProtoField::Ambiguous => {
-                                for _ in 0..size {
-                                    if rank_results[rank_idx].rank > prev.rank || rank_idx == 0 {
-                                        graph.push(BLOCKS[2]);
-                                    } else {
-                                        graph.push(BLOCKS[1]);
-                                        dependent.push(col_idx);
-                                    }
-                                    prev = rank_results[rank_idx];
-                                    rank_idx += 1;
-                                    col_idx += 1;
-                                }
-                            }
-                        }
-                    }
                     println!("No CRC found in {num_iters} iterations.");
-                    println!(
-                        "Rank graph - {} = fixed, {} = independent, {} = dependent\n",
-                        BLOCKS[0], BLOCKS[2], BLOCKS[1]
-                    );
-                    let graph_str = graph.iter().collect::<String>();
-                    let chunk_len = 64;
-                    for (ii, chunk) in graph_str
-                        .chars()
-                        .collect::<Vec<_>>()
-                        .chunks(chunk_len)
-                        .enumerate()
-                    {
-                        let pos = ii * chunk_len;
-                        let chunk_str: String = chunk.iter().collect();
-                        println!("[{pos:3}]   {chunk_str}");
-                    }
-                    println!("Locations of dependent columns:");
-                    for chunk in dependent.chunks(chunk_len) {
-                        println!("{:?}", chunk.iter().collect::<Vec<_>>());
-                    }
+                    print_rank_graph(&rank_results, &ps);
                 }
                 Err(e) => return Err(e),
             }

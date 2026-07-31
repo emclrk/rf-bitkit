@@ -90,7 +90,7 @@ pub enum BitkitError {
     MatrixMultDimError(usize, usize, usize, usize),
 
     #[error("CRC Field Discontinuity")]
-    CrcFieldDiscontinuity(Vec<crc::RankResult>, proto::ProtocolStructure),
+    CrcFieldDiscontinuity(Vec<linalg::RankResult>, proto::ProtocolStructure),
 
     #[error("No CRC found")]
     NoCrcFound,
@@ -138,6 +138,9 @@ impl Bitstream {
     }
     pub fn bits_as_bytes(&self) -> Vec<u8> {
         self.bits.as_bytes().iter().map(|bit| bit - b'0').collect()
+    }
+    pub fn remove_bit(&mut self, idx: usize) {
+        self.bits.remove(idx);
     }
     /// Chunk the Bitstream up into symbols of length `symlen`. The last symbol will be shorter
     /// if the Bitstream is not evenly divisible by `symlen`.

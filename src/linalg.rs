@@ -1,6 +1,19 @@
 use crate::{BitkitError, Bitstream};
+use rayon::prelude::*;
 use std::fmt;
 use std::ops::{Index, IndexMut, Mul};
+
+/// RankResult - result of the windowed rank analysis.
+/// `rank` : the row rank of the windowed matrix
+/// `width`: the width of the windowed matrix (going from index=0 to index=width - 1)
+/// `diff` : the difference between the width of the window and the rank of the matrix. diff=0 means
+///          full rank, diff>0 signals probable CRC bit(s) entering the window
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct RankResult {
+    pub rank: usize,
+    pub width: usize,
+    pub diff: usize,
+}
 
 /// Matrix of bits. Each row is a Bitstream. It's assumed that all Bitstreams are of the same
 /// length.
@@ -46,6 +59,20 @@ impl BitMatrix {
             num_cols,
             is_rref,
         })
+    }
+    /// XOR to remove any affine element (eg, if a CRC was initialized or XOR'd by a constant)
+    pub fn remove_affine(&mut self) {
+        // xor everything with first row
+        for ii in 1..self.num_rows() {
+            for jj in 0..self.num_cols() {
+                self[ii][jj] ^= self[0][jj];
+            }
+        }
+        // zero out this row - since it was xor'd with everything else it no longer contributes to
+        // rowspace
+        for jj in 0..self.num_cols() {
+            self[0][jj] = 0;
+        }
     }
     pub fn is_zero(&self) -> bool {
         self.bits.iter().all(|&b| b != 0)
@@ -173,7 +200,7 @@ impl BitMatrix {
         row_ech
     } // row_echelon_form
     /// Get reduced row echelon form of a matrix
-    fn rref(self) -> Self {
+    pub fn rref(self) -> Self {
         let mut result = self.row_echelon_form();
         for row in (0..result.num_rows).rev() {
             if let Some(pivot_col) = result[row].iter().position(|&x| x == 1) {
@@ -265,6 +292,26 @@ impl Mul for &BitMatrix {
     }
 }
 
+/// Find the rank in a left-to-right growing window across the BitMatrix. The rank at each position
+/// is the rank of the matrix up to and including that column.
+pub fn windowed_rank(bitmat: &BitMatrix) -> Vec<RankResult> {
+    // For now, we're doing an exhaustive search, fully aware that this is dumb, but at least it's
+    // threaded. We don't want to miss it if it's in weird place.
+    let mut rank: Vec<RankResult> = (1..=bitmat.num_cols())
+        .into_par_iter()
+        .map(|width| {
+            let rk = bitmat.window(0, width).unwrap().mat_rank();
+            RankResult {
+                rank: rk,
+                width,
+                diff: width - rk,
+            }
+        })
+        .collect();
+    rank.sort_by_key(|r| r.width);
+    rank
+}
+
 /// Compute the dot product of two vectors over GF(2). Add = XOR, mul = AND.
 pub(crate) fn dot_prod_gf2(vec1: &[u8], vec2: &[u8]) -> Result<u8, BitkitError> {
     if vec1.len() != vec2.len() {
@@ -302,55 +349,6 @@ pub(crate) fn mat_mul_gf2(mat1: &BitMatrix, mat2: &BitMatrix) -> Result<BitMatri
         num_cols: mat2.num_cols,
         is_rref: false,
     })
-}
-
-/// Berlekamp-Massey algorithm
-pub(crate) fn berlekamp_massey(null_vec: &[u8]) -> Vec<u8> {
-    if null_vec.is_empty() {
-        // empty null vec --> LFSR of length 0 is represented by the trivial polynomial
-        // w/no feedback taps
-        return vec![1];
-    }
-    // Step 1 - initialize
-    let mut l_assumed_errs = 0; // current number of assumed errors
-    let mut cx_potential: Vec<u8> = vec![0; null_vec.len()];
-    let mut bx_prev_cx: Vec<u8> = vec![0; null_vec.len()];
-    cx_potential[0] = 1;
-    bx_prev_cx[0] = 1;
-    let mut m_iters_since_update = 1;
-    let mut disc;
-    for n in 0..null_vec.len() {
-        // step 2 - calculate discrepancy
-        disc = (1..=l_assumed_errs).fold(null_vec[n], |acc, ii| {
-            acc ^ (cx_potential[ii] & null_vec[n - ii])
-        });
-        if disc == 0 {
-            // Step 3
-            m_iters_since_update += 1;
-        } else if 2 * l_assumed_errs <= n {
-            // Step 5
-            let tx_temp_cx = cx_potential.clone();
-            // C(x) = C(x) - d b−1 x^m B(x);
-            // In GF(2), - is XOR, d/b is 1 (bc they're nonzero by virtue of reaching this point in
-            // the code), x^m shifts B(x) by m
-            for ii in m_iters_since_update..cx_potential.len() {
-                cx_potential[ii] ^= bx_prev_cx[ii - m_iters_since_update];
-            }
-            l_assumed_errs = n + 1 - l_assumed_errs;
-            bx_prev_cx = tx_temp_cx;
-            m_iters_since_update = 1;
-        } else {
-            // step 4
-            for ii in m_iters_since_update..cx_potential.len() {
-                cx_potential[ii] ^= bx_prev_cx[ii - m_iters_since_update];
-            }
-            m_iters_since_update += 1;
-        }
-    }
-    while cx_potential.last() == Some(&0) {
-        cx_potential.pop();
-    }
-    cx_potential
 }
 
 #[cfg(test)]
@@ -484,10 +482,5 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(ns, expected);
-    }
-    #[test]
-    fn test_berlekamp_massey() {
-        let seq: Vec<u8> = vec![1, 1, 0, 1, 1, 0];
-        assert_eq!(berlekamp_massey(&seq), vec![1, 1, 1]);
     }
 } // mod tests

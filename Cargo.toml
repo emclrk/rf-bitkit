@@ -1,6 +1,6 @@
 [package]
 name = "rf-bitkit"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 exclude = ["gen.rs", "devtools/"]
 license = "MIT OR Apache-2.0"
