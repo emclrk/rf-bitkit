@@ -186,7 +186,7 @@ impl BitMatrix {
         row_ech
     } // row_echelon_form
     /// Get reduced row echelon form of a matrix
-    fn rref(self) -> Self {
+    pub fn rref(self) -> Self {
         let mut result = self.row_echelon_form();
         for row in (0..result.num_rows).rev() {
             if let Some(pivot_col) = result[row].iter().position(|&x| x == 1) {
@@ -337,55 +337,6 @@ pub(crate) fn mat_mul_gf2(mat1: &BitMatrix, mat2: &BitMatrix) -> Result<BitMatri
     })
 }
 
-/// Berlekamp-Massey algorithm
-pub(crate) fn berlekamp_massey(null_vec: &[u8]) -> Vec<u8> {
-    if null_vec.is_empty() {
-        // empty null vec --> LFSR of length 0 is represented by the trivial polynomial
-        // w/no feedback taps
-        return vec![1];
-    }
-    // Step 1 - initialize
-    let mut l_assumed_errs = 0; // current number of assumed errors
-    let mut cx_potential: Vec<u8> = vec![0; null_vec.len()];
-    let mut bx_prev_cx: Vec<u8> = vec![0; null_vec.len()];
-    cx_potential[0] = 1;
-    bx_prev_cx[0] = 1;
-    let mut m_iters_since_update = 1;
-    let mut disc;
-    for n in 0..null_vec.len() {
-        // step 2 - calculate discrepancy
-        disc = (1..=l_assumed_errs).fold(null_vec[n], |acc, ii| {
-            acc ^ (cx_potential[ii] & null_vec[n - ii])
-        });
-        if disc == 0 {
-            // Step 3
-            m_iters_since_update += 1;
-        } else if 2 * l_assumed_errs <= n {
-            // Step 5
-            let tx_temp_cx = cx_potential.clone();
-            // C(x) = C(x) - d b−1 x^m B(x);
-            // In GF(2), - is XOR, d/b is 1 (bc they're nonzero by virtue of reaching this point in
-            // the code), x^m shifts B(x) by m
-            for ii in m_iters_since_update..cx_potential.len() {
-                cx_potential[ii] ^= bx_prev_cx[ii - m_iters_since_update];
-            }
-            l_assumed_errs = n + 1 - l_assumed_errs;
-            bx_prev_cx = tx_temp_cx;
-            m_iters_since_update = 1;
-        } else {
-            // step 4
-            for ii in m_iters_since_update..cx_potential.len() {
-                cx_potential[ii] ^= bx_prev_cx[ii - m_iters_since_update];
-            }
-            m_iters_since_update += 1;
-        }
-    }
-    while cx_potential.last() == Some(&0) {
-        cx_potential.pop();
-    }
-    cx_potential
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,10 +468,5 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(ns, expected);
-    }
-    #[test]
-    fn test_berlekamp_massey() {
-        let seq: Vec<u8> = vec![1, 1, 0, 1, 1, 0];
-        assert_eq!(berlekamp_massey(&seq), vec![1, 1, 1]);
     }
 } // mod tests

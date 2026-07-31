@@ -1,4 +1,4 @@
-use crate::linalg::{berlekamp_massey, windowed_rank, BitMatrix};
+use crate::linalg::{windowed_rank, BitMatrix};
 use crate::proto::ProtocolStructure;
 use crate::{positionwise_entropy, BitkitError, Bitstream};
 use rand::prelude::*;
@@ -78,6 +78,7 @@ pub fn find_crc(
         .map(|bs| ps.extract_varying_bits(bs).and_then(Bitstream::new))
         .collect::<Result<Vec<_>, _>>()?;
     let varying_locs = ps.extract_varying_locs(&bitstrs[0])?;
+    let all_bitmat = BitMatrix::new(&varying_bitstrs)?;
     let mut rng = rand::rng();
     let mut candidates: Vec<Result<CrcResult, BitkitError>> = Vec::with_capacity(num_iters);
     // Try several times, with different random samples, and return the result with the highest
@@ -87,7 +88,7 @@ pub fn find_crc(
             .sample(&mut rng, k_samples)
             .cloned()
             .collect();
-        match find_crc_from_varying(rand_sample, &ps) {
+        match find_crc_from_varying(&all_bitmat, rand_sample, &ps) {
             Ok(mut crc_result) => {
                 crc_result.frame_start_col = varying_locs[crc_result.start_col];
                 if let Some(Ok(existing)) = candidates
@@ -122,12 +123,12 @@ pub fn find_crc(
 /// Do the actual work to find the CRC. Expects a slice of Bitstreams composed of only the varying
 /// bits from the protocol.
 pub(crate) fn find_crc_from_varying(
-    varying_bitstrs: Vec<Bitstream>,
+    all_bitmat: &BitMatrix,
+    sampled_bitstrs: Vec<Bitstream>,
     ps: &ProtocolStructure,
 ) -> Result<CrcResult, BitkitError> {
     // XORing to remove any affine element (eg if the CRC was initialized or XOR'd by a constant)
-    let orig_bitmat = BitMatrix::new(&varying_bitstrs)?;
-    let mut bitmat = orig_bitmat.clone();
+    let mut bitmat = BitMatrix::new(&sampled_bitstrs)?;
     for ii in 1..bitmat.num_rows() {
         for jj in 0..bitmat.num_cols() {
             bitmat[ii][jj] ^= bitmat[0][jj];
@@ -139,7 +140,7 @@ pub(crate) fn find_crc_from_varying(
         bitmat[0][jj] = 0;
     }
     let base_rank = bitmat.mat_rank();
-    if base_rank == varying_bitstrs.len() - 1 {
+    if base_rank == sampled_bitstrs.len() - 1 {
         let error_msg: String = format!(
             "Matrix rank {} is too low to detect CRC with linear algebra methods. \
                 More bitstream samples needed",
@@ -165,20 +166,20 @@ pub(crate) fn find_crc_from_varying(
         }
         prev = *entry;
     }
-    // TODO
     // construct bitmat from the *found* potetntial crc locations
     let start_col = rank_drop[0].width - 1;
     let crc_width = bitmat.num_cols() - base_rank;
-    let mut cands = construct_crc(&bitmat, &varying_bitstrs[0], start_col, crc_width)?;
+    let mut cands = construct_crc(&bitmat, &sampled_bitstrs[0], start_col, crc_width)?;
+    // Score candidates
     for cand in cands.iter_mut() {
-        for row in 0..bitmat.num_rows() {
+        for row in 0..all_bitmat.num_rows() {
             let calc_crc_val = crc_zero_init(
                 &cand.crc_polynomial,
-                &orig_bitmat[row][0..start_col],
+                &all_bitmat[row][0..start_col],
                 cand.refin,
                 cand.refout,
             );
-            let crc_packed = orig_bitmat[row][start_col..start_col + crc_width]
+            let crc_packed = all_bitmat[row][start_col..start_col + crc_width]
                 .iter()
                 .enumerate()
                 .fold(0u128, |acc, (ii, &bit)| {
@@ -195,7 +196,7 @@ pub(crate) fn find_crc_from_varying(
         .max_by_key(|cand| cand.score as u32)
         .ok_or_else(|| BitkitError::MiscellaneousError("No CRC candidates found".to_string()))
     {
-        best.score /= bitmat.num_rows() as f32;
+        best.score /= all_bitmat.num_rows() as f32;
         Ok(best)
     } else {
         Err(BitkitError::MiscellaneousError(
@@ -222,20 +223,17 @@ fn construct_crc(
     bitmats.push((refout_mat, false, true));
     let mut crc_results: Vec<CrcResult> = vec![];
     for (mat, refin, refout) in bitmats.into_iter() {
-        let ns = mat.nullspace();
-        let k = ns.num_rows() - ns.num_cols();
-        // TODO test all null vecs and return the most frequent answer for robustness?
-        let null_vecs = ns.row_window(k)?.transpose();
-        let polynomial = berlekamp_massey(&null_vecs[0]);
-        let width = polynomial.len() - 1;
-        if width != crc_width {
-            continue; // polynomial is the wrong width -skip
-        }
+        let solved = mat.rref();
+        // k=start_col, w=crc_width, polynomial at G[k-w-1]
+        let g_mat = solved.window(start_col, crc_width)?;
+        let mut polynomial = g_mat[start_col - 1].to_vec();
+        polynomial.reverse(); // MSB first in the matrix; needs to be LSB first
+        polynomial.push(1); // add leading x^w term
         let xor_result = get_xor_val(sample, &polynomial, start_col, refin, refout);
         crc_results.push(CrcResult {
             frame_start_col: start_col, // temporary - we dont have frame context here
             start_col,
-            width,
+            width: crc_width,
             xor_val: xor_result,
             refin,
             refout,
@@ -360,7 +358,7 @@ mod tests {
     fn test_crc_interlaken() {
         // refin=false refout=false, nonzero init and xorout
         let bitstrs = from_txt("./tests/test_bits_interlaken.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(MAX_ITERS));
+        let result = test_crc(&bitstrs, 0x3, Some(1));
         assert_eq!(result.frame_start_col, 16);
         assert_eq!(result.start_col, 16);
     }
@@ -379,7 +377,7 @@ mod tests {
         // like above, but with a 5-bit preamble - make sure it still works and brings back the right
         // location
         let bitstrs = from_txt("./tests/test_bits_interlaken_preamble.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(MAX_ITERS));
+        let result = test_crc(&bitstrs, 0x3, Some(1));
         assert_eq!(result.frame_start_col, 21);
         assert_eq!(result.start_col, 16);
     }
@@ -388,26 +386,26 @@ mod tests {
     fn test_crc_usb5_header() {
         // refin=true refout=true, nonzero init and xorout, not byte aligned (11 bits)
         let bitstrs = from_txt("./tests/test_bits_crc5usb.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x5, Some(MAX_ITERS));
+        let _ = test_crc(&bitstrs, 0x5, Some(1));
     }
     #[test]
     fn test_crc_7mmc() {
         // byte-aligned, refin=false/refout=false, no init or xorout
         let bitstrs = from_txt("./tests/test_bits_crc7mmc.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x9, Some(MAX_ITERS));
+        let _ = test_crc(&bitstrs, 0x9, Some(1));
     }
     #[test]
     fn test_crc_8_bluetooth() {
         // refin=true and refout=true, byte aligned
         let bitstrs = from_txt("./tests/test_bits_crc8bt.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0xa7, Some(MAX_ITERS));
+        let _ = test_crc(&bitstrs, 0xa7, Some(1));
     }
     #[ignore]
     #[test]
     fn test_crc_12umts() {
         // refin=false, refout=true, crc_width=12 (%8!=0)
         let bitstrs = from_txt("./tests/test_bits_crc12umts.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x80f, Some(MAX_ITERS));
+        let _ = test_crc(&bitstrs, 0x80f, Some(1));
     }
     #[test]
     fn test_reflect() {
