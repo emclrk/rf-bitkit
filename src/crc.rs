@@ -119,23 +119,13 @@ pub(crate) fn find_crc_from_varying(
     sampled_bitstrs: Vec<Bitstream>,
     ps: &ProtocolStructure,
 ) -> Result<CrcResult, BitkitError> {
-    // XORing to remove any affine element (eg if the CRC was initialized or XOR'd by a constant)
     let sampled_varying_bitstrs: Vec<Bitstream> = sampled_bitstrs
         .iter()
         .map(|bs| ps.extract_varying_bits(bs).and_then(Bitstream::new))
         .collect::<Result<Vec<_>, _>>()?;
     let all_bitmat = BitMatrix::new(all_bitstrs)?;
     let mut varying_bitmat = BitMatrix::new(&sampled_varying_bitstrs)?;
-    for ii in 1..varying_bitmat.num_rows() {
-        for jj in 0..varying_bitmat.num_cols() {
-            varying_bitmat[ii][jj] ^= varying_bitmat[0][jj];
-        }
-    }
-    // zero out this row - since it was xor'd with everything else it's no longer contributing to
-    // the rowspace
-    for jj in 0..varying_bitmat.num_cols() {
-        varying_bitmat[0][jj] = 0;
-    }
+    varying_bitmat.remove_affine();
     let base_rank = varying_bitmat.mat_rank();
     if base_rank == sampled_varying_bitstrs.len() - 1 {
         let error_msg: String = format!(

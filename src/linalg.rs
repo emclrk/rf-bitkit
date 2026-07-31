@@ -60,6 +60,20 @@ impl BitMatrix {
             is_rref,
         })
     }
+    /// XOR to remove any affine element (eg, if a CRC was initialized or XOR'd by a constant)
+    pub fn remove_affine(&mut self) {
+        // xor everything with first row
+        for ii in 1..self.num_rows() {
+            for jj in 0..self.num_cols() {
+                self[ii][jj] ^= self[0][jj];
+            }
+        }
+        // zero out this row - since it was xor'd with everything else it no longer contributes to
+        // rowspace
+        for jj in 0..self.num_cols() {
+            self[0][jj] = 0;
+        }
+    }
     pub fn is_zero(&self) -> bool {
         self.bits.iter().all(|&b| b != 0)
     }

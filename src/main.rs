@@ -454,15 +454,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 .map(|bs| ps.extract_varying_bits(bs).and_then(Bitstream::new))
                 .collect::<Result<Vec<_>, _>>()?;
             let mut bitmat = BitMatrix::new(&varying_bitstrs)?;
-            // XOR to remove affine element
-            for ii in 1..bitmat.num_rows() {
-                for jj in 0..bitmat.num_cols() {
-                    bitmat[ii][jj] ^= bitmat[0][jj];
-                }
-            }
-            for jj in 0..bitmat.num_cols() {
-                bitmat[0][jj] = 0;
-            }
+            bitmat.remove_affine();
             let ranks = windowed_rank(&bitmat);
             print_rank_graph(&ranks, &ps);
         }
