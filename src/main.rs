@@ -96,8 +96,11 @@ enum Commands {
     /// This can help identify fields like flags, parity bits, and CRC fields.
     Rank { file: String },
     /// Detect CRC polynomial, location, and parameters. CRC is found using linear algebra methods
-    /// over GF(2), and random sampling of the bitstreams is also used to protect against small
-    /// numbers of bit errors, which would break the linearity the method depends on.
+    /// over GF(2), and repeated random sampling of the bitstreams reduces the effect of spurious
+    /// linear dependencies and protects against small numbers of bit errors, which would break the
+    /// linearity the method depends on.
+    /// Use --exclude-bits to exclude known non-CRC dependent columns (flags, parity bits), which
+    /// can be identified by the rank graph.
     Crc {
         file: String,
         #[arg(long)]
