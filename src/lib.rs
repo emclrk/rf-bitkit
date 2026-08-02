@@ -10,6 +10,7 @@ pub mod cluster;
 pub mod crc;
 pub mod linalg;
 pub mod proto;
+pub mod spec;
 
 /// Wrapper struct for a string of demodulated bits
 #[derive(Deserialize, Clone)]
@@ -94,6 +95,9 @@ pub enum BitkitError {
 
     #[error("No CRC found")]
     NoCrcFound,
+
+    #[error("Invalid Spec: {0}")]
+    InvalidSpec(String),
 
     #[error("{0}")]
     MiscellaneousError(String),
@@ -441,7 +445,11 @@ pub fn from_txt(filepath: impl AsRef<Path>) -> Result<Vec<Bitstream>, BitkitErro
 
     reader
         .lines()
-        .map(|line| Bitstream::new(line?))
+        .filter_map(|line| match line {
+            Err(e) => Some(Err(BitkitError::from(e))),
+            Ok(s) if s.starts_with('#') || s.trim().is_empty() => None,
+            Ok(s) => Some(Bitstream::new(s)),
+        })
         .collect::<Result<Vec<Bitstream>, BitkitError>>()
 }
 
