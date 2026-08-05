@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::num::ParseIntError;
 use std::path::Path;
 use thiserror::Error;
 pub mod cluster;
@@ -71,6 +72,9 @@ pub enum BitkitError {
 
     #[error("XML parsing error: {0}")]
     Xml(#[from] quick_xml::DeError),
+
+    #[error("Parse error: {0}")]
+    ParseError(#[from] ParseIntError),
 
     #[error("Invalid bit character: '{0}'")]
     InvalidBit(char),

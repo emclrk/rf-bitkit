@@ -1,10 +1,33 @@
 use crate::BitkitError;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
+pub enum FieldType {
+    Preamble,
+    SyncWord,
+    Fixed,
+    Payload,
+    Crc,
+    Checksum,
+}
+impl FromStr for FieldType {
+    type Err = BitkitError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "preamble" => Ok(Self::Preamble),
+            "sync_word" => Ok(Self::SyncWord),
+            "fixed" => Ok(Self::Fixed),
+            "payload" => Ok(Self::Payload),
+            "crc" => Ok(Self::Crc),
+            "checksum" => Ok(Self::Checksum),
+            _ => Err(Self::Err::InvalidSpec(String::from("Unknown field type"))),
+        }
+    }
+}
+#[derive(Debug)]
 pub enum FieldSpec {
     Preamble {
         len: usize,
-        start_bit: u8,
     },
     SyncWord {
         bits: Vec<u8>,
@@ -30,17 +53,16 @@ pub enum FieldSpec {
         label: String,
     },
 }
-
 impl FieldSpec {
     pub fn gen_header_lines(&self, field_name: &str, start_loc: usize) -> Vec<String> {
         let mut output: Vec<String> = vec![];
         let (start, end): (usize, usize) = match self {
-            Self::Preamble { len, start_bit: _ } => (start_loc, start_loc + len),
             Self::SyncWord { bits } | Self::Fixed { bits } => (start_loc, start_loc + bits.len()),
 
-            Self::Payload { len } => (start_loc, start_loc + len),
+            Self::Preamble { len, .. } | Self::Payload { len } | Self::Checksum { len, .. } => {
+                (start_loc, start_loc + len)
+            }
             Self::Crc { width, .. } => (start_loc, start_loc + width),
-            Self::Checksum { len, .. } => (start_loc, start_loc + len),
         };
         let field_type = self.type_str();
         let optional_str: String = match self {
@@ -94,13 +116,36 @@ impl FieldSpec {
             Self::Checksum { .. } => String::from("checksum"),
         }
     }
-}
+} // impl FieldSpec
+
+#[derive(Debug)]
 pub struct PacketSpec(Vec<(String, FieldSpec)>);
 
+struct FieldParse<'a> {
+    name: &'a str,
+    field_type: FieldType,
+    range: (usize, usize),
+    val: Option<u128>,
+}
+
+struct CrcParse<'a> {
+    poly: u128,
+    init: u128,
+    refin: bool,
+    refout: bool,
+    xorval: u128,
+    covers: &'a str,
+}
+
+struct CheckParse<'a> {
+    covers: &'a str,
+    label: &'a str,
+}
+
 impl PacketSpec {
+    /// Construct and validate PacketSpec from a vector of (String, FieldSpec)
+    /// Field names must be unique and `covers` references must be valid and ordered
     pub fn new(fields: Vec<(String, FieldSpec)>) -> Result<Self, BitkitError> {
-        // Validated constructor - field names must be unique, and `covers` references must be valid
-        // and ordered.
         if fields.is_empty() {
             return Err(BitkitError::InvalidSpec(String::from("Empty spec")));
         }
@@ -112,13 +157,13 @@ impl PacketSpec {
                 )));
             }
             match fspec {
-                FieldSpec::Crc { covers, .. } | FieldSpec::Checksum { covers, .. } => {
-                    if !names.contains(covers) {
-                        return Err(BitkitError::InvalidSpec(format!(
-                            "{covers} field reference must be declared before being used in {}",
-                            fspec.type_str()
-                        )));
-                    }
+                FieldSpec::Crc { covers, .. } | FieldSpec::Checksum { covers, .. }
+                    if !names.contains(covers) =>
+                {
+                    return Err(BitkitError::InvalidSpec(format!(
+                        "{covers} field reference must be declared before being used in {}",
+                        fspec.type_str()
+                    )));
                 }
                 _ => (),
             };
@@ -129,7 +174,206 @@ impl PacketSpec {
     pub fn fields(&self) -> &[(String, FieldSpec)] {
         &self.0
     }
-    fn gen_header(&self) -> Vec<String> {
+    /// Parse # comment lines from testfile headers into PacketSpec
+    pub fn parse_header(header: &[String]) -> Result<Self, BitkitError> {
+        let mut packet: Vec<(String, FieldSpec)> = vec![];
+        let mut fieldlines: Vec<FieldParse> = vec![];
+        let mut crcs: Vec<(String, CrcParse)> = vec![];
+        let mut checks: Vec<(String, CheckParse)> = vec![];
+        for each in header.iter() {
+            if let Some(line) = each.strip_prefix("# field: ") {
+                fieldlines.push(Self::parse_fieldline(line)?);
+            } else if let Some(crc_line) = each.strip_prefix("# crc: ") {
+                crcs.push(Self::parse_crc(&crc_line)?);
+            } else if let Some(cs_line) = each.strip_prefix("# checksum: ") {
+                checks.push(Self::parse_checksum(&cs_line)?);
+            }
+        }
+        for parsed in fieldlines.iter() {
+            match parsed.field_type {
+                FieldType::Preamble => packet.push((
+                    parsed.name.to_string(),
+                    FieldSpec::Preamble {
+                        len: parsed.range.1 - parsed.range.0,
+                    },
+                )),
+                FieldType::SyncWord => packet.push((
+                    parsed.name.to_string(),
+                    FieldSpec::SyncWord {
+                        bits: u128_to_bitvec(parsed.val.unwrap(), parsed.range.1 - parsed.range.0),
+                    },
+                )),
+                FieldType::Fixed => packet.push((
+                    parsed.name.to_string(),
+                    FieldSpec::Fixed {
+                        bits: u128_to_bitvec(parsed.val.unwrap(), parsed.range.1 - parsed.range.0),
+                    },
+                )),
+                FieldType::Payload => packet.push((
+                    parsed.name.to_string(),
+                    FieldSpec::Payload {
+                        len: parsed.range.1 - parsed.range.0,
+                    },
+                )),
+                FieldType::Crc => {
+                    let crc = &crcs.iter().find(|(name, _)| name == parsed.name).unwrap().1;
+                    packet.push((
+                        parsed.name.to_string(),
+                        FieldSpec::Crc {
+                            width: parsed.range.1 - parsed.range.0,
+                            poly: crc.poly,
+                            init: crc.init,
+                            refin: crc.refin,
+                            refout: crc.refout,
+                            xorval: crc.xorval,
+                            covers: crc.covers.to_string(),
+                        },
+                    ))
+                }
+                FieldType::Checksum => {
+                    let cx = &checks
+                        .iter()
+                        .find(|(name, _)| name == parsed.name)
+                        .ok_or(BitkitError::InvalidSpec(format!(
+                            "Could not find {} in header",
+                            parsed.name,
+                        )))?
+                        .1;
+                    packet.push((
+                        parsed.name.to_string(),
+                        FieldSpec::Checksum {
+                            len: parsed.range.1 - parsed.range.0,
+                            covers: cx.covers.to_string(),
+                            label: cx.label.to_string(),
+                        },
+                    ))
+                }
+            }
+        }
+        Self::new(packet)
+    }
+    fn parse_fieldline(line: &str) -> Result<FieldParse, BitkitError> {
+        let keyvals = line
+            .split_whitespace()
+            .filter_map(|kv| kv.split_once('='))
+            .collect::<HashMap<&str, &str>>();
+        let field_type = keyvals
+            .get("type")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "Spec parsing: no field type provided",
+            )))?
+            .parse::<FieldType>()?;
+        let mut val: Option<u128> = None;
+        if let Some(value) = keyvals.get("val") {
+            val = Some(u128::from_str_radix(
+                value.strip_prefix("0x").unwrap_or(value),
+                16,
+            )?);
+        }
+        let (start_str, end_str) = keyvals
+            .get("range")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "Spec parsing: no range provided",
+            )))?
+            .split_once("..")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "Spec parsing: malformed range",
+            )))?;
+        let range = (
+            start_str.parse::<usize>().map_err(|_| {
+                BitkitError::InvalidSpec(String::from("Spec parsing: invalid range start"))
+            })?,
+            end_str.parse::<usize>().map_err(|_| {
+                BitkitError::InvalidSpec(String::from("Spec parsing: invalid range end"))
+            })?,
+        );
+        let name = keyvals
+            .get("name")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "Spec parsing: no field name provided",
+            )))?;
+        Ok(FieldParse {
+            name,
+            field_type,
+            range,
+            val,
+        })
+    }
+    fn parse_crc(crc_line: &str) -> Result<(String, CrcParse), BitkitError> {
+        let keyvals = crc_line
+            .split_whitespace()
+            .filter_map(|kv| kv.split_once('='))
+            .collect::<HashMap<&str, &str>>();
+        let fieldname = keyvals
+            .get("field")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "{crc_line} missing \"field:\"",
+            )))?;
+        let poly = if let Some(value) = keyvals.get("poly") {
+            u128::from_str_radix(value.strip_prefix("0x").unwrap_or(value), 16)?
+        } else {
+            0
+        };
+        let init = if let Some(value) = keyvals.get("init") {
+            u128::from_str_radix(value.strip_prefix("0x").unwrap_or(value), 16)?
+        } else {
+            0
+        };
+        let xorval = if let Some(value) = keyvals.get("xorout") {
+            u128::from_str_radix(value.strip_prefix("0x").unwrap_or(value), 16)?
+        } else {
+            0
+        };
+        let refin = if let Some(value) = keyvals.get("refin") {
+            value.parse::<bool>().unwrap()
+        } else {
+            false
+        };
+        let refout = if let Some(value) = keyvals.get("refout") {
+            value.parse::<bool>().unwrap()
+        } else {
+            false
+        };
+        let covers = keyvals
+            .get("covers")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "{crc_line} missing \"covers:\"",
+            )))?;
+        Ok((
+            fieldname.to_string(),
+            CrcParse {
+                poly,
+                init,
+                refin,
+                refout,
+                xorval,
+                covers,
+            },
+        ))
+    }
+    fn parse_checksum(cs_line: &str) -> Result<(String, CheckParse), BitkitError> {
+        let keyvals = cs_line
+            .split_whitespace()
+            .filter_map(|kv| kv.split_once('='))
+            .collect::<HashMap<&str, &str>>();
+        let fieldname = keyvals
+            .get("field")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "{cs_line} missing \"field:\"",
+            )))?;
+        let label = keyvals
+            .get("label")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "{cs_line} missing \"label:\", needed for checksum type",
+            )))?;
+        let covers = keyvals
+            .get("covers")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "{cs_line} missing \"covers:\"",
+            )))?;
+        Ok((fieldname.to_string(), CheckParse { covers, label }))
+    }
+    pub fn gen_header(&self) -> Vec<String> {
         let mut header: Vec<String> = vec![];
         let mut start_loc: usize = 0;
         for (fname, fspec) in self.0.iter() {
@@ -145,12 +389,49 @@ impl PacketSpec {
         }
         header
     }
-    // Parse # comment lines into PacketSpec
-    // fn parse_header(lines: &Vec<String>) -> Self {
-    //     let mut header: Vec<(String, FieldSpec)> = vec![];
-    // }
-}
+    pub fn gen_packets(&self, num_packets: usize) -> Vec<String> {
+        let mut contents = self.gen_header();
+        for _ in 0..num_packets {
+            let mut line = String::new();
+            for (name, field) in self.fields().iter() {
+                let res = match field {
+                    FieldSpec::Preamble { len } => &(0..*len)
+                        .map(|ii| {
+                            let bit = 1 - (ii % 2);
+                            if bit == 0 {
+                                '0'
+                            } else {
+                                '1'
+                            }
+                        })
+                        .collect::<String>(),
+                    FieldSpec::SyncWord { bits } | FieldSpec::Fixed { bits } => &bits
+                        .iter()
+                        .map(|b| if *b == 0 { '0' } else { '1' })
+                        .collect::<String>(),
+                    //len
+                    FieldSpec::Payload { .. } => &String::new(),
+                    // width, poly, init, refin, refout, xorval, covers,
+                    FieldSpec::Crc { .. } => &String::new(),
+                    // len, covers, label
+                    FieldSpec::Checksum { .. } => &String::new(),
+                };
+                line.push_str(res);
 
+                break;
+            }
+            contents.push(line);
+            break;
+        }
+        contents
+    }
+} // impl PacketSpec
+
+fn u128_to_bitvec(val: u128, len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|ii| ((val >> (len - 1 - ii)) & 1) as u8)
+        .collect()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,25 +469,45 @@ mod tests {
         ])
         .is_err());
     }
-    //     #[test]
-    //     fn test_write() {
-    //         let crc = FieldSpec::Crc {
-    //             width: 20,
-    //             poly: 7u128,
-    //             init: 0u128,
-    //             refin: false,
-    //             refout: false,
-    //             xorval: 0u128,
-    //             covers: format!("data"),
-    //         };
-    //         let pack = PacketSpec::new(vec![
-    //             (String::from("data"), FieldSpec::Payload { len: 200 }),
-    //             (String::from("crc1"), crc),
-    //         ])
-    //         .unwrap();
-    //         let lines = pack.gen_header();
-    //         for line in lines.iter() {
-    //             println!("{line}");
-    //         }
-    //     }
+    #[test]
+    fn test_write_spec() {
+        let crc = FieldSpec::Crc {
+            width: 20,
+            poly: 7u128,
+            init: 0u128,
+            refin: false,
+            refout: false,
+            xorval: 0u128,
+            covers: format!("data"),
+        };
+        let fixed_bits = vec![1, 1, 0, 1, 1];
+        let pack = PacketSpec::new(vec![
+            (String::from("pre"), FieldSpec::Preamble { len: 7 }),
+            (
+                String::from("spacer"),
+                FieldSpec::Fixed {
+                    bits: fixed_bits.clone(),
+                },
+            ),
+            (String::from("data"), FieldSpec::Payload { len: 200 }),
+            (String::from("crc1"), crc),
+        ])
+        .unwrap();
+        let lines = pack.gen_header();
+        let packet = PacketSpec::parse_header(&lines).unwrap();
+        if let FieldSpec::Fixed { bits } = &packet
+            .fields()
+            .iter()
+            .find(|(name, _)| name == "spacer")
+            .unwrap()
+            .1
+        {
+            assert_eq!(bits, &fixed_bits);
+        } else {
+            // failed to pull the bits out for some reason
+            unreachable!();
+        }
+        let contents = packet.gen_packets(10);
+        println!("{:?}", contents);
+    }
 }

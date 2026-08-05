@@ -2,7 +2,7 @@
 name = "rf-bitkit"
 version = "0.3.0"
 edition = "2024"
-exclude = ["gen.rs", "devtools/"]
+exclude = ["examples/", "devtools/"]
 license = "MIT OR Apache-2.0"
 description = "A collection of analysis functions for reverse engineering RF protocols"
 repository = "https://github.com/emclrk/rf-bitkit"
