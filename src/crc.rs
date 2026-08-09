@@ -266,7 +266,7 @@ fn reflect_mat(mut bitmat: BitMatrix, start_col: usize, num_bits: usize) -> BitM
 }
 /// Reflect the bits in the data vector. If data is byte aligned, each byte will be individually
 /// reflected; if not (as in, say, CRC-5/USB header), the entire thing will be reflected.
-fn reflect_vec(data: &[u8]) -> Vec<u8> {
+pub(crate) fn reflect_vec(data: &[u8]) -> Vec<u8> {
     if data.len().is_multiple_of(8) {
         data.chunks(8)
             .flat_map(|chunk| chunk.iter().rev().copied())
@@ -276,7 +276,7 @@ fn reflect_vec(data: &[u8]) -> Vec<u8> {
     }
 }
 /// Reverse bit order of the low `width` bits of `val` (for implementing refout)
-fn reflect_bits(val: u128, width: usize) -> u128 {
+pub(crate) fn reflect_bits(val: u128, width: usize) -> u128 {
     (0..width).fold(0u128, |acc, i| acc | (((val >> i) & 1) << (width - 1 - i)))
 }
 // convert polynomial to u128 "sans width" - without the highest order element

@@ -1,4 +1,6 @@
+use crate::crc;
 use crate::BitkitError;
+use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
@@ -45,16 +47,16 @@ pub enum FieldSpec {
         refin: bool,
         refout: bool,
         xorval: u128,
-        covers: String,
+        covers: (String, String),
     },
     Checksum {
         len: usize,
-        covers: String,
+        covers: (String, String),
         label: String,
     },
 }
 impl FieldSpec {
-    pub fn gen_header_lines(&self, field_name: &str, start_loc: usize) -> Vec<String> {
+    fn gen_header_lines(&self, field_name: &str, start_loc: usize) -> Vec<String> {
         let mut output: Vec<String> = vec![];
         let (start, end): (usize, usize) = match self {
             Self::SyncWord { bits } | Self::Fixed { bits } => (start_loc, start_loc + bits.len()),
@@ -67,9 +69,7 @@ impl FieldSpec {
         let field_type = self.type_str();
         let optional_str: String = match self {
             Self::SyncWord { bits } | Self::Fixed { bits } => {
-                let packed = bits.iter().enumerate().fold(0u128, |acc, (ii, &bit)| {
-                    acc | (bit as u128) << (bits.len() - 1 - ii)
-                });
+                let packed = bitvec_to_u128(bits);
                 format!(" val=0x{:x}", packed)
             }
             _ => String::new(),
@@ -91,14 +91,17 @@ impl FieldSpec {
                 refout,
                 covers,
             } => {
-                format!("# crc: field={field_name} poly=0x{:x} init=0x{:x} xorout=0x{:x} refin={refin} refout={refout} covers={covers}\n", poly, init, xorval)
+                format!("# crc: field={field_name} poly=0x{:x} init=0x{:x} xorout=0x{:x} refin={refin} refout={refout} covers={}..{}\n", poly, init, xorval, covers.0,   covers.1)
             }
             Self::Checksum {
                 len: _,
                 covers,
                 label,
             } => {
-                format!("# checksum: field={field_name} label={label} covers={covers}\n")
+                format!(
+                    "# checksum: field={field_name} label={label} covers={}..{}\n",
+                    covers.0, covers.1
+                )
             }
         };
         if !add_str.is_empty() {
@@ -134,11 +137,11 @@ struct CrcParse<'a> {
     refin: bool,
     refout: bool,
     xorval: u128,
-    covers: &'a str,
+    covers: (&'a str, &'a str),
 }
 
 struct CheckParse<'a> {
-    covers: &'a str,
+    covers: (&'a str, &'a str),
     label: &'a str,
 }
 
@@ -158,10 +161,11 @@ impl PacketSpec {
             }
             match fspec {
                 FieldSpec::Crc { covers, .. } | FieldSpec::Checksum { covers, .. }
-                    if !names.contains(covers) =>
+                    if !names.contains(&covers.0) || !names.contains(&covers.1) =>
                 {
                     return Err(BitkitError::InvalidSpec(format!(
-                        "{covers} field reference must be declared before being used in {}",
+                        "{:?} field reference must be declared before being used in {}",
+                        covers,
                         fspec.type_str()
                     )));
                 }
@@ -184,9 +188,9 @@ impl PacketSpec {
             if let Some(line) = each.strip_prefix("# field: ") {
                 fieldlines.push(Self::parse_fieldline(line)?);
             } else if let Some(crc_line) = each.strip_prefix("# crc: ") {
-                crcs.push(Self::parse_crc(&crc_line)?);
+                crcs.push(Self::parse_crc(crc_line)?);
             } else if let Some(cs_line) = each.strip_prefix("# checksum: ") {
-                checks.push(Self::parse_checksum(&cs_line)?);
+                checks.push(Self::parse_checksum(cs_line)?);
             }
         }
         for parsed in fieldlines.iter() {
@@ -200,13 +204,23 @@ impl PacketSpec {
                 FieldType::SyncWord => packet.push((
                     parsed.name.to_string(),
                     FieldSpec::SyncWord {
-                        bits: u128_to_bitvec(parsed.val.unwrap(), parsed.range.1 - parsed.range.0),
+                        bits: u128_to_bitvec(
+                            parsed.val.ok_or(BitkitError::InvalidSpec(
+                                "sync word field should provide a value (val=0x..)".to_string(),
+                            ))?,
+                            parsed.range.1 - parsed.range.0,
+                        ),
                     },
                 )),
                 FieldType::Fixed => packet.push((
                     parsed.name.to_string(),
                     FieldSpec::Fixed {
-                        bits: u128_to_bitvec(parsed.val.unwrap(), parsed.range.1 - parsed.range.0),
+                        bits: u128_to_bitvec(
+                            parsed.val.ok_or(BitkitError::InvalidSpec(
+                                "fixed field should provide a value (val=0x..)".to_string(),
+                            ))?,
+                            parsed.range.1 - parsed.range.0,
+                        ),
                     },
                 )),
                 FieldType::Payload => packet.push((
@@ -216,7 +230,14 @@ impl PacketSpec {
                     },
                 )),
                 FieldType::Crc => {
-                    let crc = &crcs.iter().find(|(name, _)| name == parsed.name).unwrap().1;
+                    let crc = &crcs
+                        .iter()
+                        .find(|(name, _)| name == parsed.name)
+                        .ok_or(BitkitError::InvalidSpec(format!(
+                            "Could not find {} in header",
+                            parsed.name,
+                        )))?
+                        .1;
                     packet.push((
                         parsed.name.to_string(),
                         FieldSpec::Crc {
@@ -226,7 +247,7 @@ impl PacketSpec {
                             refin: crc.refin,
                             refout: crc.refout,
                             xorval: crc.xorval,
-                            covers: crc.covers.to_string(),
+                            covers: (crc.covers.0.to_string(), crc.covers.1.to_string()),
                         },
                     ))
                 }
@@ -243,7 +264,7 @@ impl PacketSpec {
                         parsed.name.to_string(),
                         FieldSpec::Checksum {
                             len: parsed.range.1 - parsed.range.0,
-                            covers: cx.covers.to_string(),
+                            covers: (cx.covers.0.to_string(), cx.covers.1.to_string()),
                             label: cx.label.to_string(),
                         },
                     ))
@@ -252,7 +273,7 @@ impl PacketSpec {
         }
         Self::new(packet)
     }
-    fn parse_fieldline(line: &str) -> Result<FieldParse, BitkitError> {
+    fn parse_fieldline(line: &str) -> Result<FieldParse<'_>, BitkitError> {
         let keyvals = line
             .split_whitespace()
             .filter_map(|kv| kv.split_once('='))
@@ -270,23 +291,13 @@ impl PacketSpec {
                 16,
             )?);
         }
-        let (start_str, end_str) = keyvals
+        let range_str = keyvals
             .get("range")
             .ok_or(BitkitError::InvalidSpec(String::from(
                 "Spec parsing: no range provided",
-            )))?
-            .split_once("..")
-            .ok_or(BitkitError::InvalidSpec(String::from(
-                "Spec parsing: malformed range",
             )))?;
-        let range = (
-            start_str.parse::<usize>().map_err(|_| {
-                BitkitError::InvalidSpec(String::from("Spec parsing: invalid range start"))
-            })?,
-            end_str.parse::<usize>().map_err(|_| {
-                BitkitError::InvalidSpec(String::from("Spec parsing: invalid range end"))
-            })?,
-        );
+
+        let range = Self::parse_range(range_str)?;
         let name = keyvals
             .get("name")
             .ok_or(BitkitError::InvalidSpec(String::from(
@@ -299,14 +310,14 @@ impl PacketSpec {
             val,
         })
     }
-    fn parse_crc(crc_line: &str) -> Result<(String, CrcParse), BitkitError> {
+    fn parse_crc(crc_line: &str) -> Result<(String, CrcParse<'_>), BitkitError> {
         let keyvals = crc_line
             .split_whitespace()
             .filter_map(|kv| kv.split_once('='))
             .collect::<HashMap<&str, &str>>();
         let fieldname = keyvals
             .get("field")
-            .ok_or(BitkitError::InvalidSpec(String::from(
+            .ok_or(BitkitError::InvalidSpec(format!(
                 "{crc_line} missing \"field:\"",
             )))?;
         let poly = if let Some(value) = keyvals.get("poly") {
@@ -325,19 +336,27 @@ impl PacketSpec {
             0
         };
         let refin = if let Some(value) = keyvals.get("refin") {
-            value.parse::<bool>().unwrap()
+            value
+                .parse::<bool>()
+                .map_err(|_| BitkitError::InvalidSpec(format!("invalid refin value: {value}")))?
         } else {
             false
         };
         let refout = if let Some(value) = keyvals.get("refout") {
-            value.parse::<bool>().unwrap()
+            value
+                .parse::<bool>()
+                .map_err(|_| BitkitError::InvalidSpec(format!("invalid refout value: {value}")))?
         } else {
             false
         };
         let covers = keyvals
             .get("covers")
-            .ok_or(BitkitError::InvalidSpec(String::from(
+            .ok_or(BitkitError::InvalidSpec(format!(
                 "{crc_line} missing \"covers:\"",
+            )))?
+            .split_once("..")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "Spec parsing: malformed `covers` range",
             )))?;
         Ok((
             fieldname.to_string(),
@@ -351,29 +370,50 @@ impl PacketSpec {
             },
         ))
     }
-    fn parse_checksum(cs_line: &str) -> Result<(String, CheckParse), BitkitError> {
+    fn parse_checksum(cs_line: &str) -> Result<(String, CheckParse<'_>), BitkitError> {
         let keyvals = cs_line
             .split_whitespace()
             .filter_map(|kv| kv.split_once('='))
             .collect::<HashMap<&str, &str>>();
         let fieldname = keyvals
             .get("field")
-            .ok_or(BitkitError::InvalidSpec(String::from(
+            .ok_or(BitkitError::InvalidSpec(format!(
                 "{cs_line} missing \"field:\"",
             )))?;
         let label = keyvals
             .get("label")
-            .ok_or(BitkitError::InvalidSpec(String::from(
+            .ok_or(BitkitError::InvalidSpec(format!(
                 "{cs_line} missing \"label:\", needed for checksum type",
             )))?;
         let covers = keyvals
             .get("covers")
-            .ok_or(BitkitError::InvalidSpec(String::from(
+            .ok_or(BitkitError::InvalidSpec(format!(
                 "{cs_line} missing \"covers:\"",
+            )))?
+            .split_once("..")
+            .ok_or(BitkitError::InvalidSpec(String::from(
+                "Spec parsing: malformed `covers` range",
             )))?;
         Ok((fieldname.to_string(), CheckParse { covers, label }))
     }
-    pub fn gen_header(&self) -> Vec<String> {
+    fn parse_range(range_term: &str) -> Result<(usize, usize), BitkitError> {
+        let (start_str, end_str) =
+            range_term
+                .split_once("..")
+                .ok_or(BitkitError::InvalidSpec(String::from(
+                    "Spec parsing: malformed range",
+                )))?;
+        let range = (
+            start_str.parse::<usize>().map_err(|_| {
+                BitkitError::InvalidSpec(String::from("Spec parsing: invalid range start"))
+            })?,
+            end_str.parse::<usize>().map_err(|_| {
+                BitkitError::InvalidSpec(String::from("Spec parsing: invalid range end"))
+            })?,
+        );
+        Ok(range)
+    }
+    fn gen_header(&self) -> Vec<String> {
         let mut header: Vec<String> = vec![];
         let mut start_loc: usize = 0;
         for (fname, fspec) in self.0.iter() {
@@ -389,41 +429,133 @@ impl PacketSpec {
         }
         header
     }
-    pub fn gen_packets(&self, num_packets: usize) -> Vec<String> {
+    pub fn gen_packets(&self, num_packets: usize) -> Result<Vec<String>, BitkitError> {
         let mut contents = self.gen_header();
+        let mut rng = rand::rng();
         for _ in 0..num_packets {
-            let mut line = String::new();
+            let mut line: Vec<u8> = vec![];
+            let mut ranges: HashMap<&str, (usize, usize)> = HashMap::new();
             for (name, field) in self.fields().iter() {
+                let range_beg = line.len();
                 let res = match field {
-                    FieldSpec::Preamble { len } => &(0..*len)
-                        .map(|ii| {
-                            let bit = 1 - (ii % 2);
-                            if bit == 0 {
-                                '0'
-                            } else {
-                                '1'
+                    FieldSpec::Preamble { len } => {
+                        ranges.insert(name, (range_beg, range_beg + len));
+                        (0..*len).map(|ii| 1 - (ii % 2) as u8).collect::<Vec<u8>>()
+                    }
+                    FieldSpec::SyncWord { bits } | FieldSpec::Fixed { bits } => {
+                        ranges.insert(name, (range_beg, range_beg + bits.len()));
+                        bits.to_vec()
+                    }
+                    FieldSpec::Payload { len } => {
+                        ranges.insert(name, (range_beg, range_beg + len));
+                        (0..*len)
+                            .map(|_| rng.random_bool(0.5) as u8)
+                            .collect::<Vec<u8>>()
+                    }
+                    FieldSpec::Crc {
+                        width,
+                        poly,
+                        init,
+                        refin,
+                        refout,
+                        xorval,
+                        covers,
+                    } => {
+                        ranges.insert(name, (range_beg, range_beg + width));
+                        match ranges
+                            .get(covers.0.as_str())
+                            .zip(ranges.get(covers.1.as_str()))
+                        {
+                            Some((beg, end)) => Self::gen_crc(
+                                *width,
+                                *poly,
+                                *init,
+                                *refin,
+                                *refout,
+                                *xorval,
+                                &line[beg.0..end.1],
+                            ),
+                            None => vec![0; *width],
+                        }
+                    }
+                    FieldSpec::Checksum { len, covers, label } => {
+                        ranges.insert(name, (range_beg, range_beg + len));
+                        match ranges
+                            .get(covers.0.as_str())
+                            .zip(ranges.get(covers.1.as_str()))
+                        {
+                            Some((beg, end)) => {
+                                Self::get_checksum(&line[beg.0..end.1], label, *len)?
                             }
-                        })
-                        .collect::<String>(),
-                    FieldSpec::SyncWord { bits } | FieldSpec::Fixed { bits } => &bits
-                        .iter()
-                        .map(|b| if *b == 0 { '0' } else { '1' })
-                        .collect::<String>(),
-                    //len
-                    FieldSpec::Payload { .. } => &String::new(),
-                    // width, poly, init, refin, refout, xorval, covers,
-                    FieldSpec::Crc { .. } => &String::new(),
-                    // len, covers, label
-                    FieldSpec::Checksum { .. } => &String::new(),
+                            None => vec![0; *len],
+                        }
+                    }
                 };
-                line.push_str(res);
-
-                break;
+                line.extend(res);
             }
-            contents.push(line);
-            break;
+            contents.push(
+                line.iter()
+                    .map(|b| if *b == 0 { '0' } else { '1' })
+                    .collect::<String>(),
+            );
         }
-        contents
+        Ok(contents)
+    }
+    fn gen_crc(
+        width: usize,
+        poly: u128,
+        init: u128,
+        refin: bool,
+        refout: bool,
+        xorval: u128,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let mask: u128 = (1u128 << width) - 1;
+        let bits: Vec<u8> = if refin {
+            crc::reflect_vec(data)
+        } else {
+            data.to_vec()
+        };
+        let mut crc_val: u128 = init;
+        for &bit in &bits {
+            let feedback = ((crc_val >> (width - 1)) & 1) ^ (bit as u128);
+            crc_val = (crc_val << 1) & mask;
+            if feedback != 0 {
+                crc_val ^= poly;
+            }
+        }
+        if refout {
+            crc_val = crc::reflect_bits(crc_val, width);
+        }
+        u128_to_bitvec(crc_val ^ xorval, width)
+    }
+    fn get_checksum(data: &[u8], label: &str, len: usize) -> Result<Vec<u8>, BitkitError> {
+        match label {
+            "addmod256" => {
+                if !data.len().is_multiple_of(8) {
+                    return Err(BitkitError::InvalidSpec(String::from(
+                        "Data covered by the checksum is not byte aligned; cannot use XOR",
+                    )));
+                }
+                let val = data.chunks(8).map(bitvec_to_u128).sum::<u128>() % 256;
+                Ok(u128_to_bitvec(val, len))
+            }
+            "xor" => {
+                if !data.len().is_multiple_of(8) {
+                    return Err(BitkitError::InvalidSpec(String::from(
+                        "Data covered by the checksum is not byte aligned; cannot use XOR",
+                    )));
+                }
+                let val = data
+                    .chunks(8)
+                    .map(bitvec_to_u128)
+                    .fold(0u128, |acc, chunk| acc ^ chunk);
+                Ok(u128_to_bitvec(val, len))
+            }
+            _ => Err(BitkitError::InvalidSpec(format!(
+                "Unknown checksum type {label}"
+            ))),
+        }
     }
 } // impl PacketSpec
 
@@ -431,6 +563,11 @@ fn u128_to_bitvec(val: u128, len: usize) -> Vec<u8> {
     (0..len)
         .map(|ii| ((val >> (len - 1 - ii)) & 1) as u8)
         .collect()
+}
+fn bitvec_to_u128(bits: &[u8]) -> u128 {
+    bits.iter().enumerate().fold(0u128, |acc, (ii, &bit)| {
+        acc | (bit as u128) << (bits.len() - 1 - ii)
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -461,8 +598,9 @@ mod tests {
             refin: false,
             refout: false,
             xorval: 0u128,
-            covers: format!("payload"),
+            covers: (format!("payload"), format!("payload")),
         };
+        // giving it wrong names - crc1 covers "payload"; should fail
         assert!(PacketSpec::new(vec![
             (format!("data"), FieldSpec::Payload { len: 25 }),
             (format!("crc1"), crc),
@@ -478,7 +616,7 @@ mod tests {
             refin: false,
             refout: false,
             xorval: 0u128,
-            covers: format!("data"),
+            covers: (format!("data"), format!("data")),
         };
         let fixed_bits = vec![1, 1, 0, 1, 1];
         let pack = PacketSpec::new(vec![
@@ -507,7 +645,24 @@ mod tests {
             // failed to pull the bits out for some reason
             unreachable!();
         }
-        let contents = packet.gen_packets(10);
-        println!("{:?}", contents);
+        let _contents = packet.gen_packets(10);
+    }
+    #[test]
+    fn test_crc() {
+        // Test case using CRC-16/IBM-SDLC
+        let poly = 0x1021;
+        let init = 0xffff;
+        let refin = true;
+        let refout = true;
+        let xorval = 0xffff;
+        let check = 0x906e;
+        // 123456789
+        let input: Vec<u8> = vec![
+            0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0,
+            1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0,
+            1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1,
+        ];
+        let checkval = PacketSpec::gen_crc(16, poly, init, refin, refout, xorval, &input);
+        assert_eq!(check, bitvec_to_u128(&checkval));
     }
 }
