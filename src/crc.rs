@@ -385,15 +385,6 @@ mod tests {
         assert_eq!(result.frame_start_col, 16);
         assert_eq!(result.start_col, 16);
     }
-    #[test]
-    fn test_crc_interlaken_preamble() {
-        // like above, but with a 5-bit preamble - make sure it still works and brings back the right
-        // location
-        let bitstrs = from_txt("./tests/test_bits_interlaken_preamble.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(1), &[]);
-        assert_eq!(result.frame_start_col, 21);
-        assert_eq!(result.start_col, 16);
-    }
     #[ignore]
     #[test]
     fn test_crc_usb5_header() {

@@ -75,7 +75,7 @@ impl FieldSpec {
             _ => String::new(),
         };
         output.push(format!(
-            "# field: name={field_name} type={field_type} range={start}..{end}{optional_str}\n"
+            "# field: name={field_name} type={field_type} range={start}..{end}{optional_str}"
         ));
         let add_str = match self {
             Self::Preamble { .. }
@@ -91,7 +91,7 @@ impl FieldSpec {
                 refout,
                 covers,
             } => {
-                format!("# crc: field={field_name} poly=0x{:x} init=0x{:x} xorout=0x{:x} refin={refin} refout={refout} covers={}..{}\n", poly, init, xorval, covers.0,   covers.1)
+                format!("# crc: field={field_name} poly=0x{:x} init=0x{:x} xorout=0x{:x} refin={refin} refout={refout} covers={}..{}", poly, init, xorval, covers.0,   covers.1)
             }
             Self::Checksum {
                 len: _,
@@ -99,7 +99,7 @@ impl FieldSpec {
                 label,
             } => {
                 format!(
-                    "# checksum: field={field_name} label={label} covers={}..{}\n",
+                    "# checksum: field={field_name} label={label} covers={}..{}",
                     covers.0, covers.1
                 )
             }
@@ -413,7 +413,7 @@ impl PacketSpec {
         );
         Ok(range)
     }
-    fn gen_header(&self) -> Vec<String> {
+    pub fn gen_header(&self) -> Vec<String> {
         let mut header: Vec<String> = vec![];
         let mut start_loc: usize = 0;
         for (fname, fspec) in self.0.iter() {
@@ -429,7 +429,14 @@ impl PacketSpec {
         }
         header
     }
-    pub fn gen_packets(&self, num_packets: usize) -> Result<Vec<String>, BitkitError> {
+    /// Generate packets for the given packet spec.
+    /// num_packets: number of packets to generate
+    /// exclude_sym: symbol to exclude from data given as a bit vector (msb first)
+    pub fn gen_packets(
+        &self,
+        num_packets: usize,
+        exclude_sym: Option<&Vec<u8>>,
+    ) -> Result<Vec<String>, BitkitError> {
         let mut contents = self.gen_header();
         let mut rng = rand::rng();
         for _ in 0..num_packets {
@@ -448,9 +455,30 @@ impl PacketSpec {
                     }
                     FieldSpec::Payload { len } => {
                         ranges.insert(name, (range_beg, range_beg + len));
-                        (0..*len)
-                            .map(|_| rng.random_bool(0.5) as u8)
-                            .collect::<Vec<u8>>()
+                        if let Some(ex_sym) = exclude_sym && !ex_sym.is_empty() {
+                            let chunk_size = ex_sym.len();
+                            if !len.is_multiple_of(chunk_size) {
+                                log::info!("{len} is not a multiple of chunk size {chunk_size} - may not be able to perfectly exclude {} from the data",ex_sym.iter().map(|b|(b'0'+b) as char).collect::<String>());
+                            }
+                            let mut output: Vec<u8> = vec![];
+                            for chunk in (0..*len).collect::<Vec<usize>>().chunks(chunk_size) {
+                                loop {
+                                    let sym = chunk
+                                        .iter()
+                                        .map(|_| rng.random_bool(0.5) as u8)
+                                        .collect::<Vec<u8>>();
+                                    if sym != *ex_sym {
+                                        output.extend(sym);
+                                        break;
+                                    }
+                                }
+                            }
+                            output
+                        } else {
+                            (0..*len)
+                                .map(|_| rng.random_bool(0.5) as u8)
+                                .collect::<Vec<u8>>()
+                        }
                     }
                     FieldSpec::Crc {
                         width,
@@ -559,12 +587,12 @@ impl PacketSpec {
     }
 } // impl PacketSpec
 
-fn u128_to_bitvec(val: u128, len: usize) -> Vec<u8> {
+pub fn u128_to_bitvec(val: u128, len: usize) -> Vec<u8> {
     (0..len)
         .map(|ii| ((val >> (len - 1 - ii)) & 1) as u8)
         .collect()
 }
-fn bitvec_to_u128(bits: &[u8]) -> u128 {
+pub fn bitvec_to_u128(bits: &[u8]) -> u128 {
     bits.iter().enumerate().fold(0u128, |acc, (ii, &bit)| {
         acc | (bit as u128) << (bits.len() - 1 - ii)
     })
@@ -580,7 +608,7 @@ mod tests {
         };
         assert_eq!(
             field.gen_header_lines("test", 0)[0],
-            format!("# field: name=test type=fixed range=0..12 val=0xabc\n")
+            format!("# field: name=test type=fixed range=0..12 val=0xabc")
         );
     }
     #[test]
@@ -645,7 +673,7 @@ mod tests {
             // failed to pull the bits out for some reason
             unreachable!();
         }
-        let _contents = packet.gen_packets(10);
+        let _contents = packet.gen_packets(10,None);
     }
     #[test]
     fn test_crc() {
