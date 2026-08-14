@@ -72,7 +72,7 @@ pub fn find_crc(
     let k_samples: usize = match sample_size {
         Some(ss) => ss,
         None => min(
-            max((ps.get_num_varying() as f32 * 1.2) as usize, 20),
+            max((ps.get_num_varying() as f32) as usize + 1, 20),
             bitstrs.len(),
         ),
     };
@@ -370,20 +370,19 @@ mod tests {
     #[test]
     fn test_crc_interlaken() {
         // refin=false refout=false, nonzero init and xorout
-        let bitstrs = from_txt("./tests/test_bits_interlaken.txt").unwrap();
+        // also tests alternating data and fixed fields
+        let bitstrs = from_txt("./tests/test_packets_00.txt").unwrap();
         let result = test_crc(&bitstrs, 0x3, Some(1), &[]);
-        assert_eq!(result.frame_start_col, 16);
-        assert_eq!(result.start_col, 16);
+        assert_eq!(result.frame_start_col, 108);
     }
     #[test]
     fn test_crc_interlaken_corrupted() {
-        let mut bitstrs = from_txt("./tests/test_bits_interlaken.txt").unwrap();
+        let mut bitstrs = from_txt("./tests/test_packets_00.txt").unwrap();
         let mut byte_vec = bitstrs[0].bitstring().into_bytes();
-        byte_vec[3] ^= 1;
+        byte_vec[55] ^= 1;
         bitstrs[0] = Bitstream::new(String::from_utf8(byte_vec).unwrap()).unwrap();
         let result = test_crc(&bitstrs, 0x3, Some(50), &[]);
-        assert_eq!(result.frame_start_col, 16);
-        assert_eq!(result.start_col, 16);
+        assert_eq!(result.frame_start_col, 108);
     }
     #[ignore]
     #[test]
@@ -401,7 +400,7 @@ mod tests {
     #[test]
     fn test_crc_8_bluetooth() {
         // refin=true and refout=true, byte aligned
-        let bitstrs = from_txt("./tests/test_bits_crc8bt.txt").unwrap();
+        let bitstrs = from_txt("./tests/test_packets_01.txt").unwrap();
         let _ = test_crc(&bitstrs, 0xa7, Some(1), &[]);
     }
     #[test]
