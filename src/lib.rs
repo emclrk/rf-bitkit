@@ -88,7 +88,7 @@ pub enum BitkitError {
     #[error("Bit string length mismatch: {0} {1}")]
     LengthMismatch(usize, usize),
 
-    #[error("Index error: used {0} max {1}")]
+    #[error("Index error: used {0} object len {1}")]
     IndexError(usize, usize),
 
     #[error("Dimension error: {0}x{1} * {2}x{3}")]

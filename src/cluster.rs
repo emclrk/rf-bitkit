@@ -18,3 +18,31 @@ pub fn cluster_by_ambiguous_bits(
     }
     Ok(bmap)
 }
+
+/// Cluster the bitstreams by the user-provided bit positions
+pub fn cluster_by_selected<'a>(
+    bitstrs: &'a [Bitstream],
+    positions: &[usize],
+) -> Result<HashMap<String, Vec<&'a Bitstream>>, BitkitError> {
+    let mut bmap: HashMap<String, Vec<&'a Bitstream>> = HashMap::new();
+    for bs in bitstrs.iter() {
+        if let Some(idx) = positions.iter().find(|&ii| *ii >= bs.len()) {
+            return Err(BitkitError::IndexError(*idx, bs.len()));
+        }
+        let bits = positions
+            .iter()
+            .map(|ii| {
+                let bitval = bs.bit_at(*ii);
+                if bitval == 0 {
+                    '0'
+                } else {
+                    '1'
+                }
+            })
+            .collect::<String>();
+        bmap.entry(bits)
+            .and_modify(|ct| ct.push(bs))
+            .or_insert(vec![bs]);
+    }
+    Ok(bmap)
+}
