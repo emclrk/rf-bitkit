@@ -161,7 +161,10 @@ pub(crate) fn find_crc_from_varying(
         if entry.width != prev.width + 1 || entry.rank != prev.rank {
             // Candidate CRC fields are NOT contiguous. Either something unexpected is going on
             // (weird data) or the CRC is interleaved or something. More investigation needed.
-            return Err(BitkitError::CrcFieldDiscontinuity(ranks, ps.clone()));
+            let global_exclude_locs: Vec<_> =
+                exclude_locs.iter().map(|ii| varying_locs[*ii]).collect();
+            let mod_ps = ps.set_exclude_to_fixed(&global_exclude_locs);
+            return Err(BitkitError::CrcFieldDiscontinuity(ranks, mod_ps));
         }
         prev = *entry;
     }

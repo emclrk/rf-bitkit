@@ -586,7 +586,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 }
                 Err(BitkitError::CrcFieldDiscontinuity(rank_results, ps)) => {
                     println!("No CRC found in {num_iters} iterations.");
-                    print_rank_graph(&rank_result, &ps, true);
+                    print_rank_graph(&rank_results, &ps, true);
                 }
                 Err(e) => return Err(e),
             }

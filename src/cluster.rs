@@ -46,3 +46,15 @@ pub fn cluster_by_selected<'a>(
     }
     Ok(bmap)
 }
+
+pub fn cluster_by_length(
+    bitstrs: &[Bitstream],
+) -> Result<HashMap<usize, Vec<&Bitstream>>, BitkitError> {
+    let mut bmap: HashMap<usize, Vec<&Bitstream>> = HashMap::new();
+    for bs in bitstrs.iter() {
+        bmap.entry(bs.len())
+            .and_modify(|ct| ct.push(bs))
+            .or_insert(vec![bs]);
+    }
+    Ok(bmap)
+}
