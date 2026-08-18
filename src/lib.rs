@@ -288,8 +288,7 @@ impl Bitstream {
             .chars()
             .zip(bs.bits.chars())
             .filter(|(x, y)| x != y)
-            .collect::<Vec<_>>()
-            .len();
+            .count();
         Ok(dist as u32)
     }
 } // impl Bitstream

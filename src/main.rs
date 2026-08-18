@@ -158,6 +158,9 @@ enum Commands {
         /// Cluster on length of bitstream
         #[arg(long)]
         by_len: bool,
+        /// Cluster using hdbscan
+        #[arg(long)]
+        with_hdb_minsize: Option<usize>,
         /// Write the clusters to text files
         #[arg(long)]
         write_clusters: bool,
@@ -331,6 +334,19 @@ fn do_infer(
         println!("  Ambiguous: {} bits", summary[&ProtoField::Ambiguous]);
     }
     println!("  Total:     {} bits", summary.values().sum::<usize>());
+    Ok(())
+}
+
+fn write_clusters_to_file(file: &str, tag: &str, copied: &[Bitstream]) -> Result<(), BitkitError> {
+    let path = Path::new(&file);
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let stem = path.file_stem().unwrap().to_str().unwrap();
+    let outfile = parent.join(format!("{stem}{tag}.txt"));
+    let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
+    for bs in copied.iter() {
+        writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
+    }
+    println!("Cluster written to {}", outfile.display());
     Ok(())
 }
 
@@ -639,6 +655,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             on_bits,
             entropy_threshold,
             by_len,
+            with_hdb_minsize,
             write_clusters,
         } => {
             let bitstrs = load_file(&file)?;
@@ -647,15 +664,8 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 for (key, cluster) in bmap {
                     let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
                     if write_clusters {
-                        let path = Path::new(&file);
-                        let parent = path.parent().unwrap_or(Path::new("."));
-                        let stem = path.file_stem().unwrap().to_str().unwrap();
-                        let outfile = parent.join(format!("{stem}_{key}.txt"));
-                        let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
-                        for bs in copied.iter() {
-                            writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
-                        }
-                        println!("Cluster written to {}", outfile.display());
+                        let tag = format!("_{key}");
+                        write_clusters_to_file(&file, &tag, &copied)?;
                     }
                 }
             } // !on_bits.is_empty()
@@ -664,19 +674,8 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 for (key, cluster) in bmap {
                     let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
                     if write_clusters {
-                        let path = Path::new(&file);
-                        let parent = path.parent().unwrap_or(Path::new("."));
-                        let stem = path.file_stem().unwrap().to_str().unwrap();
-                        let outfile = parent.join(format!("{stem}_{key}_eps-{eval}.txt"));
-                        let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
-                        for bs in copied.iter() {
-                            writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
-                        }
-                        println!("Cluster written to {}", outfile.display());
-                    }
-                    if copied.len() == 1 {
-                        println!("Cluster of size 1 - no infer performed");
-                        continue;
+                        let tag = format!("_e{eval}-{key}");
+                        write_clusters_to_file(&file, &tag, &copied)?;
                     }
                 }
             }
@@ -685,19 +684,18 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 for (key, cluster) in bmap {
                     let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
                     if write_clusters {
-                        let path = Path::new(&file);
-                        let parent = path.parent().unwrap_or(Path::new("."));
-                        let stem = path.file_stem().unwrap().to_str().unwrap();
-                        let outfile = parent.join(format!("{stem}_len-{key}.txt"));
-                        let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
-                        for bs in copied.iter() {
-                            writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
-                        }
-                        println!("Cluster written to {}", outfile.display());
+                        let tag = format!("_len-{key}");
+                        write_clusters_to_file(&file, &tag, &copied)?;
                     }
-                    if copied.len() == 1 {
-                        println!("Cluster of size 1 - no infer performed");
-                        continue;
+                }
+            }
+            if let Some(minsize) = with_hdb_minsize {
+                let bmap = cluster::cluster_hdbscan(&bitstrs, minsize)?;
+                for (key, cluster) in bmap {
+                    let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
+                    if write_clusters {
+                        let tag = format!("_hdb_{key}");
+                        write_clusters_to_file(&file, &tag, &copied)?;
                     }
                 }
             }

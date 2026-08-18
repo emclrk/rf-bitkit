@@ -1,5 +1,6 @@
 use crate::proto::ProtocolStructure;
 use crate::{positionwise_entropy, BitkitError, Bitstream};
+use hdbscan::{DistanceMetric, Hdbscan, HdbscanHyperParams};
 use std::collections::HashMap;
 
 /// Cluster the bitstreams by their ambiguous bits (based on provided epsilon)
@@ -57,4 +58,40 @@ pub fn cluster_by_length(
             .or_insert(vec![bs]);
     }
     Ok(bmap)
+}
+
+pub fn cluster_hdbscan(
+    bitstrs: &[Bitstream],
+    minsize: usize,
+) -> Result<HashMap<i32, Vec<&Bitstream>>, BitkitError> {
+    let mut bmap: HashMap<i32, Vec<&Bitstream>> = HashMap::new();
+    let hamm = get_hamming_mat(bitstrs)?;
+    let hp = HdbscanHyperParams::builder()
+        .dist_metric(DistanceMetric::Precalculated)
+        .min_cluster_size(minsize)
+        .build();
+    let labels = Hdbscan::new(&hamm, hp)
+        .cluster()
+        .map_err(|e| BitkitError::MiscellaneousError(e.to_string()))?;
+    for ii in 0..labels.len() {
+        bmap.entry(labels[ii])
+            .and_modify(|ct| ct.push(&bitstrs[ii]))
+            .or_insert(vec![&bitstrs[ii]]);
+    }
+    Ok(bmap)
+}
+
+fn get_hamming_mat(bitstrs: &[Bitstream]) -> Result<Vec<Vec<f32>>, BitkitError> {
+    let num_bs = bitstrs.len();
+    let mut dist_mat: Vec<Vec<f32>> = vec![Vec::with_capacity(num_bs); num_bs];
+    for ii in 0..num_bs {
+        for jj in 0..num_bs {
+            if ii == jj {
+                dist_mat[ii].push(0.0);
+            } else {
+                dist_mat[ii].push(bitstrs[ii].get_hamming_dist(&bitstrs[jj])? as f32);
+            }
+        }
+    }
+    Ok(dist_mat)
 }
