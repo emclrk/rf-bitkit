@@ -1,8 +1,8 @@
 [package]
 name = "rf-bitkit"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
-exclude = ["gen.rs", "devtools/"]
+exclude = ["examples/", "devtools/"]
 license = "MIT OR Apache-2.0"
 description = "A collection of analysis functions for reverse engineering RF protocols"
 repository = "https://github.com/emclrk/rf-bitkit"
@@ -17,6 +17,8 @@ doc = false
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
+env_logger = "0.11.11"
+log = "0.4.33"
 quick-xml = { version = "0.41.0", features = ["serialize"] }
 rand = "0.10.2"
 rayon = "1.12.0"

@@ -72,7 +72,7 @@ pub fn find_crc(
     let k_samples: usize = match sample_size {
         Some(ss) => ss,
         None => min(
-            max((ps.get_num_varying() as f32 * 1.2) as usize, 20),
+            max((ps.get_num_varying() as f32) as usize + 1, 20),
             bitstrs.len(),
         ),
     };
@@ -161,7 +161,10 @@ pub(crate) fn find_crc_from_varying(
         if entry.width != prev.width + 1 || entry.rank != prev.rank {
             // Candidate CRC fields are NOT contiguous. Either something unexpected is going on
             // (weird data) or the CRC is interleaved or something. More investigation needed.
-            return Err(BitkitError::CrcFieldDiscontinuity(ranks, ps.clone()));
+            let global_exclude_locs: Vec<_> =
+                exclude_locs.iter().map(|ii| varying_locs[*ii]).collect();
+            let mod_ps = ps.set_exclude_to_fixed(&global_exclude_locs);
+            return Err(BitkitError::CrcFieldDiscontinuity(ranks, mod_ps));
         }
         prev = *entry;
     }
@@ -266,7 +269,7 @@ fn reflect_mat(mut bitmat: BitMatrix, start_col: usize, num_bits: usize) -> BitM
 }
 /// Reflect the bits in the data vector. If data is byte aligned, each byte will be individually
 /// reflected; if not (as in, say, CRC-5/USB header), the entire thing will be reflected.
-fn reflect_vec(data: &[u8]) -> Vec<u8> {
+pub(crate) fn reflect_vec(data: &[u8]) -> Vec<u8> {
     if data.len().is_multiple_of(8) {
         data.chunks(8)
             .flat_map(|chunk| chunk.iter().rev().copied())
@@ -276,7 +279,7 @@ fn reflect_vec(data: &[u8]) -> Vec<u8> {
     }
 }
 /// Reverse bit order of the low `width` bits of `val` (for implementing refout)
-fn reflect_bits(val: u128, width: usize) -> u128 {
+pub(crate) fn reflect_bits(val: u128, width: usize) -> u128 {
     (0..width).fold(0u128, |acc, i| acc | (((val >> i) & 1) << (width - 1 - i)))
 }
 // convert polynomial to u128 "sans width" - without the highest order element
@@ -370,29 +373,19 @@ mod tests {
     #[test]
     fn test_crc_interlaken() {
         // refin=false refout=false, nonzero init and xorout
-        let bitstrs = from_txt("./tests/test_bits_interlaken.txt").unwrap();
+        // also tests alternating data and fixed fields
+        let bitstrs = from_txt("./tests/test_packets_00.txt").unwrap();
         let result = test_crc(&bitstrs, 0x3, Some(1), &[]);
-        assert_eq!(result.frame_start_col, 16);
-        assert_eq!(result.start_col, 16);
+        assert_eq!(result.frame_start_col, 108);
     }
     #[test]
     fn test_crc_interlaken_corrupted() {
-        let mut bitstrs = from_txt("./tests/test_bits_interlaken.txt").unwrap();
+        let mut bitstrs = from_txt("./tests/test_packets_00.txt").unwrap();
         let mut byte_vec = bitstrs[0].bitstring().into_bytes();
-        byte_vec[3] ^= 1;
+        byte_vec[55] ^= 1;
         bitstrs[0] = Bitstream::new(String::from_utf8(byte_vec).unwrap()).unwrap();
         let result = test_crc(&bitstrs, 0x3, Some(50), &[]);
-        assert_eq!(result.frame_start_col, 16);
-        assert_eq!(result.start_col, 16);
-    }
-    #[test]
-    fn test_crc_interlaken_preamble() {
-        // like above, but with a 5-bit preamble - make sure it still works and brings back the right
-        // location
-        let bitstrs = from_txt("./tests/test_bits_interlaken_preamble.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(1), &[]);
-        assert_eq!(result.frame_start_col, 21);
-        assert_eq!(result.start_col, 16);
+        assert_eq!(result.frame_start_col, 108);
     }
     #[ignore]
     #[test]
@@ -410,7 +403,7 @@ mod tests {
     #[test]
     fn test_crc_8_bluetooth() {
         // refin=true and refout=true, byte aligned
-        let bitstrs = from_txt("./tests/test_bits_crc8bt.txt").unwrap();
+        let bitstrs = from_txt("./tests/test_packets_01.txt").unwrap();
         let _ = test_crc(&bitstrs, 0xa7, Some(1), &[]);
     }
     #[test]

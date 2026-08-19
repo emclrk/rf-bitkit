@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use rf_bitkit::cluster::cluster_by_ambiguous_bits;
+use rf_bitkit::cluster;
 use rf_bitkit::crc::find_crc;
 use rf_bitkit::linalg::{windowed_rank, BitMatrix, RankResult};
 use rf_bitkit::proto::{ProtoField, ProtocolStructure};
@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-
 #[derive(Parser)]
 #[command(name = "bitkit", about = "Radio protocol bitstream analysis tool")]
 struct Cli {
@@ -33,35 +32,47 @@ enum Commands {
     },
     /// Find the common prefix across all bitstreams (preamble candidate)
     Prefix { file: String },
-    /// Compute positionwise entropy and infer protocol field structure. Given a series of
-    /// bitstreams, it identifies which bit positions are fixed across all captures and which vary,
-    /// and how much they vary. Output includes a sparkline entropy profile, per-field entropy
-    /// ranges in the structure annotation, a reference entropy value `H(1/N)` marking the
-    /// threshold at which a single packet differs from all the others, and a histogram of
-    /// ambiguous bit patterns (low but nonzero entropy positions. They may indicate device IDs or
-    /// transmitter specific fields, or bit errors in fields that should be fixed. Provide --eps,
-    /// an epsilon value, to see ambiguous bit fields). The `--verbose` flag provides the full
-    /// per-position entropy table. Optionally, cluster by low-entropy bit positions and infer
-    /// structure on the clusters, which may help separate different emitters in the capture.
+    #[command(
+        about = "Compute positionwise entropy and infer protocol field structure",
+        long_about = "Given a series of bitstreams, it identifies which bit positions are fixed\
+        across all captures and which vary, and how much they vary. Output includes a sparkline\
+        entropy profile, per-field entropy ranges in the structure annotation, a reference entropy\
+        value `H(1/N)` marking the threshold at which a single packet differs from all the others,\
+        and a histogram of ambiguous bit patterns (low but nonzero entropy positions. They may\
+        indicate device IDs or transmitter specific fields, or bit errors in fields that should be\
+        fixed. Provide --eps, an epsilon value, to see ambiguous bit fields). The `--verbose` flag\
+        provides the full per-position entropy table. Optionally, cluster by low-entropy bit\
+        positions and infer structure on the clusters, which may help separate different emitters\
+        in the capture."
+    )]
     Infer {
         file: String,
-        /// Entropy tolerance: positions with entropy <= eps are marked ambiguous
+        /// Entropy tolerance: positions with entropy <= eps are marked ambiguous. With
+        /// --cluster-min-size, eps is the entropy threshold to use for clustering.
         #[arg(long)]
         eps: Option<f32>,
         /// Print full per-position entropy table
         #[arg(long)]
         verbose: bool,
-        /// When provided, cluster the bitstreams using low entropy fields and infer on each
-        /// cluster separately. To evaluate all clusters, provide a min size of 0. Requires --eps.
+        /// When provided, cluster the bitstreams and infer on each cluster separately. Requires
+        /// --eps to cluster on low entropy bit positions or --cluster-on-bits to cluster on
+        /// selected positions. To evaluate all clusters, provide a min size of 0.
         #[arg(long)]
         cluster_min_size: Option<usize>,
-        /// When used with --cluster-min-size, writes the clusters to text files
+        /// When provided, cluster the bitstreams using provided bit positions (group all
+        /// bitstreams with the same values at those positions). Use with --cluster-min-size
+        #[arg(long, num_args(1..))]
+        cluster_on_bits: Vec<usize>,
+        /// When used with --cluster-min-size or --cluster-on-bits, writes the clusters to text files
         #[arg(long)]
         write_clusters: bool,
     },
-    /// Show normalized entropy at each symbol length to help infer symbol size. Look for a sudden
-    /// drop in entropy, which may indicate the chunking is aligning with the actual symbol
-    /// boundaries. (Note the entropy will tend to decrease with increasing symbol length).
+    #[command(
+        about = "Entropy sweep over symbol lengths",
+        long_about = "Show normalized entropy at each symbol length to help infer symbol size. Look\
+        for a sudden drop in entropy, which may indicate the chunking is aligning with the actual\
+        symbol boundaries. (Note the entropy will tend to decrease with increasing symbol length)."
+    )]
     Sweep {
         file: String,
         #[arg(long, default_value_t = 8)]
@@ -89,18 +100,27 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         skip: usize,
     },
-    /// Print a graph of the rank of the matrix formed by the bitstreams. Columns are analyzed
-    /// *after* subtracting a reference row (XOR with first packet). The graph will show fixed
-    /// bit columns, independent, and dependent columns. Dependent columns in the graph are those
-    /// that are dependent on some combination of columns *preceding* it (that is, to the left).
-    /// This can help identify fields like flags, parity bits, and CRC fields.
-    Rank { file: String },
-    /// Detect CRC polynomial, location, and parameters. CRC is found using linear algebra methods
-    /// over GF(2), and repeated random sampling of the bitstreams reduces the effect of spurious
-    /// linear dependencies and protects against small numbers of bit errors, which would break the
-    /// linearity the method depends on.
-    /// Use --exclude-bits to exclude known non-CRC dependent columns (flags, parity bits), which
-    /// can be identified by the rank graph.
+    #[command(
+        about = "Perform windowed rank analysis",
+        long_about = "Print a graph of the rank of the matrix formed by the bitstreams. Columns are\
+        analyzed *after* subtracting a reference row (XOR with first packet). The graph will show\
+        fixed bit columns, independent, and dependent columns. Dependent columns in the graph are\
+        those that are dependent on some combination of columns *preceding* it (that is, to the left).\
+        This can help identify fields like flags, parity bits, and CRC fields."
+    )]
+    Rank {
+        file: String,
+        #[arg(long)]
+        verbose: bool,
+    },
+    #[command(
+        about = "Detect CRC polynomial",
+        long_about = "Detect CRC polynomial, location, and parameters. CRC is found using linear\
+        algebra methods over GF(2), and repeated random sampling of the bitstreams reduces the\
+        effect of spurious linear dependencies and protects against small numbers of bit errors,\
+        which would break the linearity the method depends on. Use --exclude-bits to exclude known\
+        non-CRC dependent columns (flags, parity bits), which can be identified by the rank graph."
+    )]
     Crc {
         file: String,
         #[arg(long)]
@@ -110,8 +130,11 @@ enum Commands {
         #[arg(long, num_args(1..))]
         exclude_bits: Vec<usize>,
     },
-    /// Cross-correlate two bitstreams from a file by index - may help identify misalignment
-    /// between captures
+    #[command(
+        about = "Cross-correlate two bitstreams",
+        long_about = "Cross-correlate two bitstreams from a file by index - may help identify\
+        misalignment between captures"
+    )]
     Correlate {
         file: String,
         /// Index of the first bitstream
@@ -123,6 +146,21 @@ enum Commands {
         /// Number of top results to show
         #[arg(short, long, default_value_t = 10)]
         top: usize,
+    },
+    Cluster {
+        file: String,
+        /// Cluster based on specified bits
+        #[arg(long, num_args(1..))]
+        on_bits: Vec<usize>,
+        /// Cluster based on ambiguous bits defined by the entropy threshold
+        #[arg(long)]
+        entropy_threshold: Option<f32>,
+        /// Cluster on length of bitstream
+        #[arg(long)]
+        by_len: bool,
+        /// Write the clusters to text files
+        #[arg(long)]
+        write_clusters: bool,
     },
 }
 
@@ -148,11 +186,13 @@ fn sparkline(ents: &[f32]) -> String {
         .collect()
 }
 
-fn print_rank_graph(rank_results: &[RankResult], ps: &ProtocolStructure) {
+fn print_rank_graph(rank_results: &[RankResult], ps: &ProtocolStructure, verbose: bool) {
     const BLOCKS: &[char] = &['_', '▄', '█'];
     let mut rank_idx: usize = 0;
     let mut graph: Vec<char> = Vec::with_capacity(rank_results.len());
     let mut prev_rank = 0;
+    let mut deps = 0usize;
+    let mut inds = 0usize;
     for (field, size) in ps.get_fields() {
         match field {
             ProtoField::Fixed => {
@@ -164,8 +204,10 @@ fn print_rank_graph(rank_results: &[RankResult], ps: &ProtocolStructure) {
                 for _ in 0..size {
                     if rank_results[rank_idx].rank > prev_rank {
                         graph.push(BLOCKS[2]);
+                        inds += 1;
                     } else {
                         graph.push(BLOCKS[1]);
+                        deps += 1;
                     }
                     prev_rank = rank_results[rank_idx].rank;
                     rank_idx += 1;
@@ -195,9 +237,13 @@ fn print_rank_graph(rank_results: &[RankResult], ps: &ProtocolStructure) {
         .filter(|(_, x)| **x == BLOCKS[1])
         .map(|(ii, _)| ii)
         .collect::<Vec<_>>();
-    println!("Locations of dependent columns:");
-    for chunk in dependent.chunks(chunk_len) {
-        println!("{:?}", chunk.iter().collect::<Vec<_>>());
+    let vars = inds + deps;
+    println!(
+        "Found {vars} varying bits with estimated {inds} independent and {deps} dependent columns"
+    );
+    if verbose {
+        println!("Location of dependent columns:");
+        println!("{:?}", dependent.iter().collect::<Vec<_>>());
     }
 }
 fn annotated_structure(fields: &[(ProtoField, usize)], ents: &[f32]) -> String {
@@ -289,6 +335,7 @@ fn do_infer(
 }
 
 fn main() {
+    env_logger::init();
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
         eprintln!("Error: {e}");
@@ -341,12 +388,47 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             eps,
             verbose,
             cluster_min_size,
+            cluster_on_bits,
             write_clusters,
         } => {
             let bitstrs = load_file(&file)?;
             if let Some(min_size) = cluster_min_size {
-                if let Some(eval) = eps {
-                    let bmap = cluster_by_ambiguous_bits(&bitstrs, eval)?;
+                if !cluster_on_bits.is_empty() {
+                    let bmap = cluster::cluster_by_selected(&bitstrs, &cluster_on_bits)?;
+                    let clusters: Vec<(&String, &Vec<&Bitstream>)> = match min_size {
+                        0 => bmap.iter().collect(),
+                        _ => bmap
+                            .iter()
+                            .filter(|(_key, val)| val.len() >= min_size)
+                            .collect(),
+                    };
+                    for (key, cluster) in clusters {
+                        let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
+                        if write_clusters {
+                            let path = Path::new(&file);
+                            let parent = path.parent().unwrap_or(Path::new("."));
+                            let stem = path.file_stem().unwrap().to_str().unwrap();
+                            let outfile = parent.join(format!("{stem}_{key}.txt"));
+                            let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
+                            for bs in copied.iter() {
+                                writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
+                            }
+                            println!("Cluster written to {}", outfile.display());
+                        }
+                        if copied.len() == 1 {
+                            println!("Cluster of size 1 - no infer performed");
+                            continue;
+                        }
+                        let ents = positionwise_entropy(&copied);
+                        let ps = if let Some(eval) = eps {
+                            ProtocolStructure::infer_structure_tolerance(&ents, eval)
+                        } else {
+                            ProtocolStructure::infer_structure(&ents)
+                        };
+                        do_infer(&copied, &ents, &ps, verbose, key)?;
+                    }
+                } else if let Some(eval) = eps {
+                    let bmap = cluster::cluster_by_ambiguous_bits(&bitstrs, eval)?;
                     let clusters: Vec<(&String, &Vec<&Bitstream>)> = match min_size {
                         0 => bmap.iter().collect(),
                         _ => bmap
@@ -377,10 +459,15 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                     }
                 } else {
                     return Err(BitkitError::MiscellaneousError(String::from(
-                        "Argument error - clustering requires --eps",
+                        "Argument error - clustering requires --eps or --cluster-on",
                     )));
                 }
             } else {
+                if !cluster_on_bits.is_empty() {
+                    return Err(BitkitError::MiscellaneousError(String::from(
+                        "Argument error - clustering requires --cluster-min-size",
+                    )));
+                }
                 let ents = positionwise_entropy(&bitstrs);
                 let ps = match eps {
                     Some(e) => ProtocolStructure::infer_structure_tolerance(&ents, e),
@@ -451,7 +538,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             }
         }
 
-        Commands::Rank { file } => {
+        Commands::Rank { file, verbose } => {
             let bitstrs = load_file(&file)?;
             let ps = ProtocolStructure::infer_structure(&positionwise_entropy(&bitstrs));
             let varying_bitstrs: Vec<Bitstream> = bitstrs
@@ -461,7 +548,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             let mut bitmat = BitMatrix::new(&varying_bitstrs)?;
             bitmat.remove_affine();
             let ranks = windowed_rank(&bitmat);
-            print_rank_graph(&ranks, &ps);
+            print_rank_graph(&ranks, &ps, verbose);
         }
 
         Commands::Crc {
@@ -498,7 +585,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 }
                 Err(BitkitError::CrcFieldDiscontinuity(rank_results, ps)) => {
                     println!("No CRC found in {num_iters} iterations.");
-                    print_rank_graph(&rank_results, &ps);
+                    print_rank_graph(&rank_results, &ps, true);
                 }
                 Err(e) => return Err(e),
             }
@@ -544,6 +631,75 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                     r.overlap(),
                     r.score()
                 );
+            }
+        }
+
+        Commands::Cluster {
+            file,
+            on_bits,
+            entropy_threshold,
+            by_len,
+            write_clusters,
+        } => {
+            let bitstrs = load_file(&file)?;
+            if !on_bits.is_empty() {
+                let bmap = cluster::cluster_by_selected(&bitstrs, &on_bits)?;
+                for (key, cluster) in bmap {
+                    let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
+                    if write_clusters {
+                        let path = Path::new(&file);
+                        let parent = path.parent().unwrap_or(Path::new("."));
+                        let stem = path.file_stem().unwrap().to_str().unwrap();
+                        let outfile = parent.join(format!("{stem}_{key}.txt"));
+                        let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
+                        for bs in copied.iter() {
+                            writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
+                        }
+                        println!("Cluster written to {}", outfile.display());
+                    }
+                }
+            } // !on_bits.is_empty()
+            if let Some(eval) = entropy_threshold {
+                let bmap = cluster::cluster_by_ambiguous_bits(&bitstrs, eval)?;
+                for (key, cluster) in bmap {
+                    let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
+                    if write_clusters {
+                        let path = Path::new(&file);
+                        let parent = path.parent().unwrap_or(Path::new("."));
+                        let stem = path.file_stem().unwrap().to_str().unwrap();
+                        let outfile = parent.join(format!("{stem}_{key}_eps-{eval}.txt"));
+                        let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
+                        for bs in copied.iter() {
+                            writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
+                        }
+                        println!("Cluster written to {}", outfile.display());
+                    }
+                    if copied.len() == 1 {
+                        println!("Cluster of size 1 - no infer performed");
+                        continue;
+                    }
+                }
+            }
+            if by_len {
+                let bmap = cluster::cluster_by_length(&bitstrs)?;
+                for (key, cluster) in bmap {
+                    let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
+                    if write_clusters {
+                        let path = Path::new(&file);
+                        let parent = path.parent().unwrap_or(Path::new("."));
+                        let stem = path.file_stem().unwrap().to_str().unwrap();
+                        let outfile = parent.join(format!("{stem}_len-{key}.txt"));
+                        let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
+                        for bs in copied.iter() {
+                            writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
+                        }
+                        println!("Cluster written to {}", outfile.display());
+                    }
+                    if copied.len() == 1 {
+                        println!("Cluster of size 1 - no infer performed");
+                        continue;
+                    }
+                }
             }
         }
     }

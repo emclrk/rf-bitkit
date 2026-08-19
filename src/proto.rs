@@ -21,6 +21,8 @@ pub struct ProtocolStructure {
     protocol: Vec<(ProtoField, usize)>,
     num_fields: usize,
     num_bits: usize,
+    ents: Vec<f32>,
+    eps: f32,
 }
 
 impl ProtocolStructure {
@@ -54,6 +56,8 @@ impl ProtocolStructure {
                 protocol: fields,
                 num_fields: 0,
                 num_bits: 0,
+                ents: vec![],
+                eps: 0.0,
             };
         }
         let mut bit_count = 0;
@@ -89,6 +93,8 @@ impl ProtocolStructure {
             protocol: fields,
             num_fields: field_count,
             num_bits: bit_count,
+            ents: poswise_ents.to_vec(),
+            eps,
         }
     }
     /// Returns a summary in a HashMap with the count of each type of field
@@ -194,6 +200,13 @@ impl ProtocolStructure {
                 .collect::<String>(),
             locs,
         ))
+    }
+    pub(crate) fn set_exclude_to_fixed(&self, exclude_locs: &[usize]) -> Self {
+        let mut mod_ents = self.ents.clone();
+        for ii in exclude_locs.iter() {
+            mod_ents[*ii] = 0.0;
+        }
+        ProtocolStructure::infer_structure_tolerance(&mod_ents, self.eps)
     }
 } // impl ProtocolStructure
 #[cfg(test)]
