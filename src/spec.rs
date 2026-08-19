@@ -160,14 +160,22 @@ impl PacketSpec {
                 )));
             }
             match fspec {
-                FieldSpec::Crc { covers, .. } | FieldSpec::Checksum { covers, .. }
-                    if !names.contains(&covers.0) || !names.contains(&covers.1) =>
-                {
-                    return Err(BitkitError::InvalidSpec(format!(
-                        "{:?} field reference must be declared before being used in {}",
-                        covers,
-                        fspec.type_str()
-                    )));
+                FieldSpec::Crc { covers, .. } | FieldSpec::Checksum { covers, .. } => {
+                    if !names.contains(&covers.0) || !names.contains(&covers.1) {
+                        return Err(BitkitError::InvalidSpec(format!(
+                            "{:?} field reference must be declared before being used in {}",
+                            covers,
+                            fspec.type_str()
+                        )));
+                    }
+                    if fields.iter().position(|(c, _)| *c == covers.0)
+                        > fields.iter().position(|(c, _)| *c == covers.1)
+                    {
+                        return Err(BitkitError::InvalidSpec(format!(
+                            "{} occurs after {}",
+                            covers.0, covers.1
+                        )));
+                    }
                 }
                 _ => (),
             };
@@ -455,7 +463,7 @@ impl PacketSpec {
                     }
                     FieldSpec::Payload { len } => {
                         ranges.insert(name, (range_beg, range_beg + len));
-                        if let Some(ex_sym) = exclude_sym && !ex_sym.is_empty() {
+                        if let Some(ex_sym) = exclude_sym.filter(|s| !s.is_empty()) {
                             let chunk_size = ex_sym.len();
                             if !len.is_multiple_of(chunk_size) {
                                 log::info!("{len} is not a multiple of chunk size {chunk_size} - may not be able to perfectly exclude {} from the data",ex_sym.iter().map(|b|(b'0'+b) as char).collect::<String>());
@@ -503,7 +511,7 @@ impl PacketSpec {
                                 *xorval,
                                 &line[beg.0..end.1],
                             ),
-                            None => vec![0; *width],
+                            None => unreachable!(),
                         }
                     }
                     FieldSpec::Checksum { len, covers, label } => {
@@ -515,7 +523,7 @@ impl PacketSpec {
                             Some((beg, end)) => {
                                 Self::get_checksum(&line[beg.0..end.1], label, *len)?
                             }
-                            None => vec![0; *len],
+                            None => unreachable!(),
                         }
                     }
                 };
@@ -562,7 +570,7 @@ impl PacketSpec {
             "addmod256" => {
                 if !data.len().is_multiple_of(8) {
                     return Err(BitkitError::InvalidSpec(String::from(
-                        "Data covered by the checksum is not byte aligned; cannot use XOR",
+                        "Data covered by the checksum is not byte aligned; cannot use addition mod 256",
                     )));
                 }
                 let val = data.chunks(8).map(bitvec_to_u128).sum::<u128>() % 256;
@@ -673,7 +681,7 @@ mod tests {
             // failed to pull the bits out for some reason
             unreachable!();
         }
-        let _contents = packet.gen_packets(10,None);
+        let _contents = packet.gen_packets(10, None);
     }
     #[test]
     fn test_crc() {

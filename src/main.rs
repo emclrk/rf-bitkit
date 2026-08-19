@@ -100,7 +100,6 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         skip: usize,
     },
-    ///
     #[command(
         about = "Perform windowed rank analysis",
         long_about = "Print a graph of the rank of the matrix formed by the bitstreams. Columns are\
