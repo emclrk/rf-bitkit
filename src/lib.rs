@@ -97,6 +97,9 @@ pub enum BitkitError {
     #[error("CRC Field Discontinuity")]
     CrcFieldDiscontinuity(Vec<linalg::RankResult>, proto::ProtocolStructure),
 
+    #[error("CRC insufficient samples: {0}")]
+    CrcInsufficientSamples(String),
+
     #[error("No CRC found")]
     NoCrcFound,
 
