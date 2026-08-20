@@ -75,7 +75,7 @@ impl BitMatrix {
         }
     }
     pub fn is_zero(&self) -> bool {
-        self.bits.iter().all(|&b| b != 0)
+        self.bits.iter().all(|&b| b == 0)
     }
     pub fn num_rows(&self) -> usize {
         self.num_rows

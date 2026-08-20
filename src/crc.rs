@@ -56,6 +56,7 @@ pub fn find_crc(
     max_iters: Option<usize>,
     sample_size: Option<usize>,
     exclude_bits: &[usize],
+    spec_crc: Vec<usize>,
 ) -> Result<CrcResult, BitkitError> {
     if bitstrs.is_empty() {
         return Err(BitkitError::EmptyVec);
@@ -71,18 +72,16 @@ pub fn find_crc(
     // down the line anyway)
     let k_samples: usize = match sample_size {
         Some(ss) => ss,
-        None => min(
-            max((ps.get_num_varying() as f32) as usize + 1, 20),
-            bitstrs.len(),
-        ),
+        None => min(max(ps.get_num_varying() + 1, 20), bitstrs.len()),
     };
     let mut rng = rand::rng();
     let mut candidates: Vec<Result<CrcResult, BitkitError>> = Vec::with_capacity(num_iters);
     // Try several times, with different random samples, and return the result with the highest
     // score
+    let crcspec = spec_crc.first().copied().zip(spec_crc.get(1).copied());
     for _ in 0..num_iters {
         let rand_sample: Vec<_> = bitstrs.sample(&mut rng, k_samples).cloned().collect();
-        match find_crc_from_varying(bitstrs, rand_sample, &ps, exclude_bits) {
+        match find_crc_from_varying(bitstrs, rand_sample, &ps, exclude_bits, crcspec) {
             Ok(crc_result) => {
                 if let Some(Ok(existing)) = candidates
                     .iter_mut()
@@ -120,6 +119,7 @@ pub(crate) fn find_crc_from_varying(
     sampled_bitstrs: Vec<Bitstream>,
     ps: &ProtocolStructure,
     exclude_bits: &[usize],
+    spec_crc: Option<(usize, usize)>,
 ) -> Result<CrcResult, BitkitError> {
     let mut sampled_varying_bitstrs: Vec<Bitstream> = sampled_bitstrs
         .iter()
@@ -145,40 +145,60 @@ pub(crate) fn find_crc_from_varying(
                 More bitstream samples needed",
             base_rank
         );
-        return Err(BitkitError::MiscellaneousError(error_msg));
+        return Err(BitkitError::CrcInsufficientSamples(error_msg));
     }
-    let ranks = windowed_rank(&varying_bitmat);
-    let mut rank_drop: Vec<_> = ranks.iter().filter(|res| res.diff > 0).collect();
-    if rank_drop.is_empty() {
-        let error_msg =
-            String::from("No rank drop detected - no CRC present or maybe insufficient data");
-        return Err(BitkitError::MiscellaneousError(error_msg));
-    }
-    rank_drop.sort_by_key(|r| r.width);
-    let mut prev = rank_drop[0];
-    // Check for contiguous CRC bits
-    for entry in &rank_drop[1..] {
-        if entry.width != prev.width + 1 || entry.rank != prev.rank {
-            // Candidate CRC fields are NOT contiguous. Either something unexpected is going on
-            // (weird data) or the CRC is interleaved or something. More investigation needed.
-            let global_exclude_locs: Vec<_> =
-                exclude_locs.iter().map(|ii| varying_locs[*ii]).collect();
-            let mod_ps = ps.set_exclude_to_fixed(&global_exclude_locs);
-            return Err(BitkitError::CrcFieldDiscontinuity(ranks, mod_ps));
-        }
-        prev = *entry;
-    }
-    let start_col = rank_drop[0].width - 1;
-    let crc_width = varying_bitmat.num_cols() - base_rank;
-    let mut cands = construct_crc(&varying_bitmat, start_col, crc_width)?;
-    let sample = sampled_bitstrs[0].clone(); // TODO...does it matter which one we use for finding xor val?
     let filtered_varying_locs: Vec<usize> = varying_locs
         .iter()
         .enumerate()
         .filter(|(ii, _)| !exclude_locs.contains(ii))
         .map(|(_, &loc)| loc)
         .collect();
-    // Score candidates
+    let start_col = match spec_crc.filter(|(c, _)| filtered_varying_locs.contains(c)) {
+        Some((startcol, _)) => filtered_varying_locs
+            .iter()
+            .position(|val| *val == startcol)
+            .expect("guaranteed by filter above"),
+        None => {
+            // warn if spec_crc was provided but filtered out
+            if spec_crc.is_some() {
+                log::warn!(
+                    "--spec-crc start column is not a varying bit; falling back to auto-detection"
+                );
+            }
+            let ranks = windowed_rank(&varying_bitmat);
+            let mut rank_drop: Vec<_> = ranks.iter().filter(|res| res.diff > 0).collect();
+            if rank_drop.is_empty() {
+                let error_msg = String::from(
+                    "No rank drop detected - no CRC present or maybe insufficient data",
+                );
+                return Err(BitkitError::MiscellaneousError(error_msg));
+            }
+            rank_drop.sort_by_key(|r| r.width);
+            let mut prev = rank_drop[0];
+            // Check for contiguous CRC bits
+            for entry in &rank_drop[1..] {
+                if entry.width != prev.width + 1 || entry.rank != prev.rank {
+                    // Candidate CRC fields are NOT contiguous. Either something unexpected is going on
+                    // (weird data) or the CRC is interleaved or something. More investigation needed.
+                    let global_exclude_locs: Vec<_> =
+                        exclude_locs.iter().map(|ii| varying_locs[*ii]).collect();
+                    let mod_ps = ps.set_exclude_to_fixed(&global_exclude_locs);
+                    return Err(BitkitError::CrcFieldDiscontinuity(ranks, mod_ps));
+                }
+                prev = *entry;
+            }
+            rank_drop[0].width - 1
+        }
+    };
+    debug_assert!(base_rank <= varying_bitmat.num_rows());
+    let crc_width = if let Some((_, width)) = spec_crc {
+        width
+    } else {
+        varying_bitmat.num_cols() - base_rank
+    };
+    let mut cands = construct_crc(&varying_bitmat, start_col, crc_width, base_rank)?;
+    let sample = sampled_bitstrs[0].clone(); // TODO...does it matter which one we use for finding xor val?
+                                             // Score candidates
     for cand in cands.iter_mut() {
         cand.frame_start_col = filtered_varying_locs[cand.start_col]; // update with location in frame
         cand.xor_val = get_xor_val(
@@ -211,14 +231,12 @@ pub(crate) fn find_crc_from_varying(
     if let Ok(mut best) = cands
         .into_iter()
         .max_by_key(|cand| cand.score as u32)
-        .ok_or_else(|| BitkitError::MiscellaneousError("No CRC candidates found".to_string()))
+        .ok_or(BitkitError::NoCrcFound)
     {
         best.score /= all_bitmat.num_rows() as f32;
         Ok(best)
     } else {
-        Err(BitkitError::MiscellaneousError(
-            "No CRC candidates found".to_string(),
-        ))
+        Err(BitkitError::NoCrcFound)
     }
 }
 /// Construct candidate CRCs. Will construct all (4) combinations of refin and refout
@@ -226,6 +244,7 @@ fn construct_crc(
     bitmat: &BitMatrix,
     start_col: usize,
     crc_width: usize,
+    base_rank: usize,
 ) -> Result<Vec<CrcResult>, BitkitError> {
     let mut bitmats: Vec<_> = vec![(bitmat.clone(), false, false)];
     // refin=true
@@ -242,7 +261,7 @@ fn construct_crc(
         let solved = mat.rref();
         // k=start_col, w=crc_width, polynomial at G[k-w-1]
         let g_mat = solved.window(start_col, crc_width)?;
-        let mut polynomial = g_mat[start_col - 1].to_vec();
+        let mut polynomial = g_mat[base_rank - 1].to_vec();
         polynomial.reverse(); // MSB first in the matrix; needs to be LSB first
         polynomial.push(1); // add leading x^w term
         crc_results.push(CrcResult {
@@ -345,8 +364,9 @@ mod tests {
         expected_poly: u128,
         max_iters: Option<usize>,
         exclude_bits: &[usize],
+        crc_loc: Vec<usize>,
     ) -> CrcResult {
-        let result = find_crc(&bitstrs, max_iters, None, exclude_bits).unwrap();
+        let result = find_crc(&bitstrs, max_iters, None, exclude_bits, crc_loc).unwrap();
         assert_eq!(poly_to_u128(&result.crc_polynomial), expected_poly);
         let bits = bitstrs[2].bits_as_bytes();
         let data_vec: Vec<_> = bits[0..result.frame_start_col]
@@ -375,7 +395,7 @@ mod tests {
         // refin=false refout=false, nonzero init and xorout
         // also tests alternating data and fixed fields
         let bitstrs = from_txt("./tests/test_packets_00.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(1), &[]);
+        let result = test_crc(&bitstrs, 0x3, Some(1), &[], vec![]);
         assert_eq!(result.frame_start_col, 108);
     }
     #[test]
@@ -384,7 +404,7 @@ mod tests {
         let mut byte_vec = bitstrs[0].bitstring().into_bytes();
         byte_vec[55] ^= 1;
         bitstrs[0] = Bitstream::new(String::from_utf8(byte_vec).unwrap()).unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(50), &[]);
+        let result = test_crc(&bitstrs, 0x3, Some(50), &[], vec![]);
         assert_eq!(result.frame_start_col, 108);
     }
     #[ignore]
@@ -392,25 +412,25 @@ mod tests {
     fn test_crc_usb5_header() {
         // refin=true refout=true, nonzero init and xorout, not byte aligned (11 bits)
         let bitstrs = from_txt("./tests/test_bits_crc5usb.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x5, Some(1), &[]);
+        let _ = test_crc(&bitstrs, 0x5, Some(1), &[], vec![]);
     }
     #[test]
     fn test_crc_7mmc() {
         // byte-aligned, refin=false/refout=false, no init or xorout
         let bitstrs = from_txt("./tests/test_bits_crc7mmc.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x9, Some(1), &[]);
+        let _ = test_crc(&bitstrs, 0x9, Some(1), &[], vec![]);
     }
     #[test]
     fn test_crc_8_bluetooth() {
         // refin=true and refout=true, byte aligned
         let bitstrs = from_txt("./tests/test_packets_01.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0xa7, Some(1), &[]);
+        let _ = test_crc(&bitstrs, 0xa7, Some(1), &[], vec![]);
     }
     #[test]
     fn test_crc_12umts() {
         // refin=false, refout=true, crc_width=12 (%8!=0)
         let bitstrs = from_txt("./tests/test_bits_crc12umts.txt").unwrap();
-        let _ = test_crc(&bitstrs, 0x80f, Some(1), &[]);
+        let _ = test_crc(&bitstrs, 0x80f, Some(1), &[], vec![]);
     }
     #[test]
     fn test_reflect() {
@@ -433,13 +453,13 @@ mod tests {
     #[test]
     fn test_schrader_bitexclude() {
         let bitstrs = from_txt("./tests/test_schrader_rtl433.txt").unwrap();
-        let err_result = find_crc(&bitstrs, None, None, &[]);
+        let err_result = find_crc(&bitstrs, None, None, &[], vec![]);
         assert!(err_result.is_err());
         assert!(matches!(
             err_result,
             Err(BitkitError::CrcFieldDiscontinuity(..))
         ));
         let exclude = vec![11];
-        let _ = test_crc(&bitstrs, 0x7, None, &exclude);
+        let _ = test_crc(&bitstrs, 0x7, None, &exclude, vec![]);
     }
 }

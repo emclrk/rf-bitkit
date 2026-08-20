@@ -129,6 +129,8 @@ enum Commands {
         sample_size: Option<usize>,
         #[arg(long, num_args(1..))]
         exclude_bits: Vec<usize>,
+        #[arg(long, num_args(2), value_names=["STARTCOL", "WIDTH"])]
+        spec_crc: Vec<usize>,
     },
     #[command(
         about = "Cross-correlate two bitstreams",
@@ -147,6 +149,10 @@ enum Commands {
         #[arg(short, long, default_value_t = 10)]
         top: usize,
     },
+    #[command(
+        about = "Cluster the bitstreams",
+        long_about = "Cluster the bitstreams by the selected method(s), and write to files if indicated."
+    )]
     Cluster {
         file: String,
         /// Cluster based on specified bits
@@ -158,6 +164,9 @@ enum Commands {
         /// Cluster on length of bitstream
         #[arg(long)]
         by_len: bool,
+        /// Cluster using hdbscan
+        #[arg(long)]
+        with_hdb_minsize: Option<usize>,
         /// Write the clusters to text files
         #[arg(long)]
         write_clusters: bool,
@@ -334,6 +343,19 @@ fn do_infer(
     Ok(())
 }
 
+fn write_clusters_to_file(file: &str, tag: &str, copied: &[Bitstream]) -> Result<(), BitkitError> {
+    let path = Path::new(&file);
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let stem = path.file_stem().unwrap().to_str().unwrap();
+    let outfile = parent.join(format!("{stem}{tag}.txt"));
+    let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
+    for bs in copied.iter() {
+        writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
+    }
+    println!("Cluster written to {}", outfile.display());
+    Ok(())
+}
+
 fn main() {
     env_logger::init();
     let cli = Cli::parse();
@@ -365,7 +387,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 for (i, bs) in bitstrs.iter().enumerate() {
                     println!(
                         "[{i:3}] {}  ({} bits)",
-                        bs.skip(skip).to_hex(symlen),
+                        bs.skip(skip)?.to_hex(symlen)?,
                         bs.len()
                     );
                 }
@@ -405,15 +427,8 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                     for (key, cluster) in clusters {
                         let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
                         if write_clusters {
-                            let path = Path::new(&file);
-                            let parent = path.parent().unwrap_or(Path::new("."));
-                            let stem = path.file_stem().unwrap().to_str().unwrap();
-                            let outfile = parent.join(format!("{stem}_{key}.txt"));
-                            let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
-                            for bs in copied.iter() {
-                                writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
-                            }
-                            println!("Cluster written to {}", outfile.display());
+                            let tag = format!("_{key}");
+                            write_clusters_to_file(&file, &tag, &copied)?;
                         }
                         if copied.len() == 1 {
                             println!("Cluster of size 1 - no infer performed");
@@ -482,7 +497,10 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             skip,
         } => {
             let bitstrs = load_file(&file)?;
-            let skipped: Vec<Bitstream> = bitstrs.iter().map(|bs| bs.skip(skip)).collect();
+            let skipped: Vec<Bitstream> = bitstrs
+                .iter()
+                .map(|bs| bs.skip(skip))
+                .collect::<Result<Vec<_>, _>>()?;
             println!("=== Entropy Sweep: {file} ===");
             println!();
             println!(
@@ -495,9 +513,11 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 let avg = skipped
                     .iter()
                     .map(|bs| bs.get_normed_entropy(symlen))
+                    .collect::<Result<Vec<f32>, _>>()?
+                    .iter()
                     .sum::<f32>()
                     / skipped.len() as f32;
-                let unique = get_alphabet_counts(&bitstrs, symlen, skip).len();
+                let unique = get_alphabet_counts(&bitstrs, symlen, skip)?.len();
                 results.push((symlen, avg, unique));
             }
             for (symlen, entropy, unique) in &results {
@@ -507,7 +527,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
 
         Commands::Alphabet { file, symlen, skip } => {
             let bitstrs = load_file(&file)?;
-            let counts = get_alphabet_counts(&bitstrs, symlen, skip);
+            let counts = get_alphabet_counts(&bitstrs, symlen, skip)?;
             let mut sorted: Vec<_> = counts.iter().collect();
             sorted.sort_by(|a, b| b.1.cmp(a.1));
 
@@ -526,7 +546,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             skip,
         } => {
             let bitstrs = load_file(&file)?;
-            let counts = get_substr_counts(&bitstrs, len, skip);
+            let counts = get_substr_counts(&bitstrs, len, skip)?;
             let mut sorted: Vec<_> = counts.iter().collect();
             sorted.sort_by(|a, b| b.1.cmp(a.1));
 
@@ -556,11 +576,18 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             max_iters,
             sample_size,
             exclude_bits,
+            spec_crc,
         } => {
             let bitstrs = load_file(&file)?;
             let num_iters = max_iters.unwrap_or(10);
             // todo - exclude_bits
-            match find_crc(&bitstrs, Some(num_iters), sample_size, &exclude_bits) {
+            match find_crc(
+                &bitstrs,
+                Some(num_iters),
+                sample_size,
+                &exclude_bits,
+                spec_crc,
+            ) {
                 Ok(result) => {
                     let poly_val: u128 = result.crc_polynomial[..result.crc_polynomial.len() - 1]
                         .iter()
@@ -639,66 +666,61 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             on_bits,
             entropy_threshold,
             by_len,
+            with_hdb_minsize,
             write_clusters,
         } => {
             let bitstrs = load_file(&file)?;
             if !on_bits.is_empty() {
                 let bmap = cluster::cluster_by_selected(&bitstrs, &on_bits)?;
+                println!("--- Cluster by selected bits {:?} ---", on_bits);
+                println!("key: count");
+                println!("-----------");
                 for (key, cluster) in bmap {
                     let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
                     if write_clusters {
-                        let path = Path::new(&file);
-                        let parent = path.parent().unwrap_or(Path::new("."));
-                        let stem = path.file_stem().unwrap().to_str().unwrap();
-                        let outfile = parent.join(format!("{stem}_{key}.txt"));
-                        let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
-                        for bs in copied.iter() {
-                            writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
-                        }
-                        println!("Cluster written to {}", outfile.display());
+                        let tag = format!("_{key}");
+                        write_clusters_to_file(&file, &tag, &copied)?;
                     }
+                    println!("{key}: {}", cluster.len());
                 }
             } // !on_bits.is_empty()
             if let Some(eval) = entropy_threshold {
                 let bmap = cluster::cluster_by_ambiguous_bits(&bitstrs, eval)?;
+                println!("--- Cluster by entropy threshold eps={eval} ---");
+                println!("key: count");
                 for (key, cluster) in bmap {
                     let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
                     if write_clusters {
-                        let path = Path::new(&file);
-                        let parent = path.parent().unwrap_or(Path::new("."));
-                        let stem = path.file_stem().unwrap().to_str().unwrap();
-                        let outfile = parent.join(format!("{stem}_{key}_eps-{eval}.txt"));
-                        let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
-                        for bs in copied.iter() {
-                            writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
-                        }
-                        println!("Cluster written to {}", outfile.display());
+                        let tag = format!("_e{eval}-{key}");
+                        write_clusters_to_file(&file, &tag, &copied)?;
                     }
-                    if copied.len() == 1 {
-                        println!("Cluster of size 1 - no infer performed");
-                        continue;
-                    }
+                    println!("{key}: {}", cluster.len());
                 }
             }
             if by_len {
                 let bmap = cluster::cluster_by_length(&bitstrs)?;
+                println!("--- Cluster by Bitstream length ---");
+                println!("key: count");
                 for (key, cluster) in bmap {
                     let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
                     if write_clusters {
-                        let path = Path::new(&file);
-                        let parent = path.parent().unwrap_or(Path::new("."));
-                        let stem = path.file_stem().unwrap().to_str().unwrap();
-                        let outfile = parent.join(format!("{stem}_len-{key}.txt"));
-                        let mut fout = File::create(&outfile).map_err(BitkitError::Io)?;
-                        for bs in copied.iter() {
-                            writeln!(fout, "{}", bs.bitstring()).map_err(BitkitError::Io)?;
-                        }
-                        println!("Cluster written to {}", outfile.display());
+                        let tag = format!("_len-{key}");
+                        write_clusters_to_file(&file, &tag, &copied)?;
                     }
-                    if copied.len() == 1 {
-                        println!("Cluster of size 1 - no infer performed");
-                        continue;
+                    println!("{key}: {}", cluster.len());
+                }
+            }
+            if let Some(minsize) = with_hdb_minsize {
+                let bmap = cluster::cluster_hdbscan(&bitstrs, minsize)?;
+                println!("--- Cluster with HDBSCAN (min={minsize}) ---");
+                println!("key: count");
+                for (key, cluster) in bmap {
+                    let copied: Vec<Bitstream> = cluster.iter().map(|&b| b.clone()).collect();
+                    if write_clusters {
+                        let tag = format!("_hdb_{key}");
+                        write_clusters_to_file(&file, &tag, &copied)?;
                     }
+                    println!("{key}: {}", cluster.len());
                 }
             }
         }
