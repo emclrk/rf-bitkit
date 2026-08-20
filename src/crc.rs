@@ -78,7 +78,7 @@ pub fn find_crc(
     let mut candidates: Vec<Result<CrcResult, BitkitError>> = Vec::with_capacity(num_iters);
     // Try several times, with different random samples, and return the result with the highest
     // score
-    let crcspec = spec_crc.get(0).copied().zip(spec_crc.get(1).copied());
+    let crcspec = spec_crc.first().copied().zip(spec_crc.get(1).copied());
     for _ in 0..num_iters {
         let rand_sample: Vec<_> = bitstrs.sample(&mut rng, k_samples).cloned().collect();
         match find_crc_from_varying(bitstrs, rand_sample, &ps, exclude_bits, crcspec) {
@@ -157,8 +157,14 @@ pub(crate) fn find_crc_from_varying(
         Some((startcol, _)) => filtered_varying_locs
             .iter()
             .position(|val| *val == startcol)
-            .unwrap(),
+            .expect("guaranteed by filter above"),
         None => {
+            // warn if spec_crc was provided but filtered out
+            if spec_crc.is_some() {
+                log::warn!(
+                    "--spec-crc start column is not a varying bit; falling back to auto-detection"
+                );
+            }
             let ranks = windowed_rank(&varying_bitmat);
             let mut rank_drop: Vec<_> = ranks.iter().filter(|res| res.diff > 0).collect();
             if rank_drop.is_empty() {
@@ -225,7 +231,7 @@ pub(crate) fn find_crc_from_varying(
     if let Ok(mut best) = cands
         .into_iter()
         .max_by_key(|cand| cand.score as u32)
-        .ok_or_else(|| BitkitError::NoCrcFound)
+        .ok_or(BitkitError::NoCrcFound)
     {
         best.score /= all_bitmat.num_rows() as f32;
         Ok(best)

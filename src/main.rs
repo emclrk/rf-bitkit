@@ -387,7 +387,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 for (i, bs) in bitstrs.iter().enumerate() {
                     println!(
                         "[{i:3}] {}  ({} bits)",
-                        bs.skip(skip).to_hex(symlen),
+                        bs.skip(skip)?.to_hex(symlen)?,
                         bs.len()
                     );
                 }
@@ -497,7 +497,10 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             skip,
         } => {
             let bitstrs = load_file(&file)?;
-            let skipped: Vec<Bitstream> = bitstrs.iter().map(|bs| bs.skip(skip)).collect();
+            let skipped: Vec<Bitstream> = bitstrs
+                .iter()
+                .map(|bs| bs.skip(skip))
+                .collect::<Result<Vec<_>, _>>()?;
             println!("=== Entropy Sweep: {file} ===");
             println!();
             println!(
@@ -510,9 +513,11 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 let avg = skipped
                     .iter()
                     .map(|bs| bs.get_normed_entropy(symlen))
+                    .collect::<Result<Vec<f32>, _>>()?
+                    .iter()
                     .sum::<f32>()
                     / skipped.len() as f32;
-                let unique = get_alphabet_counts(&bitstrs, symlen, skip).len();
+                let unique = get_alphabet_counts(&bitstrs, symlen, skip)?.len();
                 results.push((symlen, avg, unique));
             }
             for (symlen, entropy, unique) in &results {
@@ -522,7 +527,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
 
         Commands::Alphabet { file, symlen, skip } => {
             let bitstrs = load_file(&file)?;
-            let counts = get_alphabet_counts(&bitstrs, symlen, skip);
+            let counts = get_alphabet_counts(&bitstrs, symlen, skip)?;
             let mut sorted: Vec<_> = counts.iter().collect();
             sorted.sort_by(|a, b| b.1.cmp(a.1));
 
@@ -541,7 +546,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             skip,
         } => {
             let bitstrs = load_file(&file)?;
-            let counts = get_substr_counts(&bitstrs, len, skip);
+            let counts = get_substr_counts(&bitstrs, len, skip)?;
             let mut sorted: Vec<_> = counts.iter().collect();
             sorted.sort_by(|a, b| b.1.cmp(a.1));
 

@@ -132,8 +132,12 @@ impl Bitstream {
     pub fn bitstring(&self) -> String {
         self.bits.to_string()
     }
-    pub fn skip(&self, nbits: usize) -> Self {
-        Self::new(self.bits[nbits..].to_string()).unwrap()
+    pub fn skip(&self, nbits: usize) -> Result<Self, BitkitError> {
+        if nbits >= self.len() {
+            Err(BitkitError::IndexError(nbits, self.len()))
+        } else {
+            Ok(Self::new(self.bits[nbits..].to_string())?)
+        }
     }
     /// Number of bits in the Bitstream
     pub fn len(&self) -> usize {
@@ -155,33 +159,45 @@ impl Bitstream {
     }
     /// Chunk the Bitstream up into symbols of length `symlen`. The last symbol will be shorter
     /// if the Bitstream is not evenly divisible by `symlen`.
-    pub fn symbols(&self, symlen: usize) -> Vec<String> {
-        self.bits
-            .chars()
-            .collect::<Vec<char>>()
-            .chunks(symlen)
-            .map(|slice_itr| slice_itr.iter().collect::<String>())
-            .collect::<Vec<String>>()
+    pub fn symbols(&self, symlen: usize) -> Result<Vec<String>, BitkitError> {
+        if symlen == 0 {
+            Err(BitkitError::MiscellaneousError(
+                "Cannot create symbols of length 0".to_string(),
+            ))
+        } else {
+            Ok(self
+                .bits
+                .chars()
+                .collect::<Vec<char>>()
+                .chunks(symlen)
+                .map(|slice_itr| slice_itr.iter().collect::<String>())
+                .collect::<Vec<String>>())
+        }
     }
     /// Chunk the Bitstream into symbols of length `symlen`, then show those symbols as
     /// hexadecimal. If there is a chunk of bits at the end shorter than symlen, left pad with
     /// zeroes for the purposes of displaying hex.
     /// Thus if the last incomplete chunk is "1" with symlen=4, it becomes "0001".
-    pub fn to_hex(&self, symlen: usize) -> String {
-        self.symbols(symlen)
+    pub fn to_hex(&self, symlen: usize) -> Result<String, BitkitError> {
+        Ok(self
+            .symbols(symlen)?
             .iter()
             .map(|sym| {
                 let sym_val = u8::from_str_radix(&format!("{:0>symlen$}", sym), 2).unwrap();
                 format!("{:x}", sym_val)
             })
-            .collect::<String>()
+            .collect::<String>())
     }
     /// Build a frequency map of all symbols of length `symlen` in this Bitstream.
     /// counts_accumulator is passed in so it can be used across multiple Bitstreams.
     /// If the bitstring length is not evenly divisible by symlen, the last chunk of bits is
     /// dropped.
-    fn accumulate_sym_counts(&self, symlen: usize, counts_accumulator: &mut HashMap<String, u32>) {
-        let syms: Vec<String> = self.symbols(symlen);
+    fn accumulate_sym_counts(
+        &self,
+        symlen: usize,
+        counts_accumulator: &mut HashMap<String, u32>,
+    ) -> Result<(), BitkitError> {
+        let syms: Vec<String> = self.symbols(symlen)?;
         for sym in syms {
             if sym.len() < symlen {
                 continue;
@@ -191,6 +207,7 @@ impl Bitstream {
                 .and_modify(|ct| *ct += 1)
                 .or_insert(1);
         }
+        Ok(())
     }
     /// Build a frequency map of all possible substrings of length `strlen` in this Bitstream.
     /// counts_accumulator is passed in so it can accumulate across multiple Bitstreams.
@@ -198,7 +215,15 @@ impl Bitstream {
         &self,
         strlen: usize,
         counts_accumulator: &mut HashMap<String, u32>,
-    ) {
+    ) -> Result<(), BitkitError> {
+        if strlen > self.len() {
+            return Err(BitkitError::IndexError(strlen, self.len()));
+        }
+        if strlen == 0 {
+            return Err(BitkitError::MiscellaneousError(
+                "Can't create 0-length substrings".to_string(),
+            ));
+        }
         let i_range = self.len() - strlen + 1;
         for i in 0..i_range {
             let slice = &self.bits[i..i + strlen];
@@ -207,49 +232,52 @@ impl Bitstream {
                 .and_modify(|ct| *ct += 1)
                 .or_insert(1);
         }
+        Ok(())
     }
     /// Get the frequency count of each symbol of length `symlen` in this Bitstream.
-    pub fn get_sym_counts(&self, symlen: usize) -> HashMap<String, u32> {
+    pub fn get_sym_counts(&self, symlen: usize) -> Result<HashMap<String, u32>, BitkitError> {
         let mut counts = HashMap::new();
-        self.accumulate_sym_counts(symlen, &mut counts);
-        counts
+        self.accumulate_sym_counts(symlen, &mut counts)?;
+        Ok(counts)
     }
     /// Get the frequency count of each possible substring of length `strlen` in this Bitstream.
-    pub fn get_substr_counts(&self, strlen: usize) -> HashMap<String, u32> {
+    pub fn get_substr_counts(&self, strlen: usize) -> Result<HashMap<String, u32>, BitkitError> {
         let mut counts = HashMap::new();
-        self.accumulate_substr_counts(strlen, &mut counts);
-        counts
+        self.accumulate_substr_counts(strlen, &mut counts)?;
+        Ok(counts)
     }
     /// Get symbol frequency counts as a percentage (0.0 - 1.0) of all the symbols
-    pub fn get_percents(&self, symlen: usize) -> HashMap<String, f32> {
-        let counts = self.get_sym_counts(symlen);
+    pub fn get_percents(&self, symlen: usize) -> Result<HashMap<String, f32>, BitkitError> {
+        let counts = self.get_sym_counts(symlen)?;
         let total = counts.values().copied().sum::<u32>() as f32;
-        counts
+        Ok(counts
             .into_iter()
             .map(|(k, v)| (k, v as f32 / total))
-            .collect::<HashMap<String, f32>>()
+            .collect::<HashMap<String, f32>>())
     }
     /// Returns total entropy of the Bitstream (in bits) using symbols of length `symlen`
     /// Comparing the Bitstream entropy using different symbol lengths may help infer what the correct symbol length is.
-    pub fn get_total_entropy(&self, symlen: usize) -> f32 {
-        let pcts = self.get_percents(symlen);
-        pcts.values()
+    pub fn get_total_entropy(&self, symlen: usize) -> Result<f32, BitkitError> {
+        let pcts = self.get_percents(symlen)?;
+        Ok(pcts
+            .values()
             .filter(|v| **v != 0.0)
             .map(|p| -p * p.log2())
-            .sum()
+            .sum())
     }
     /// Entropy grows with symlen, so divide the entropy by the symlen to make it comparable across
     /// symlens. This results in a "fraction of maximum entropy" instead of the raw value.
-    pub fn get_normed_entropy(&self, symlen: usize) -> f32 {
-        self.get_total_entropy(symlen).max(0.0) / (symlen as f32)
+    pub fn get_normed_entropy(&self, symlen: usize) -> Result<f32, BitkitError> {
+        Ok(self.get_total_entropy(symlen)?.max(0.0) / (symlen as f32))
     }
     /// Self-information (in bits) of each symbol found in the Bitstream
-    pub fn get_self_information(&self, symlen: usize) -> HashMap<String, f32> {
-        let pcts = self.get_percents(symlen);
-        pcts.into_iter()
+    pub fn get_self_information(&self, symlen: usize) -> Result<HashMap<String, f32>, BitkitError> {
+        let pcts = self.get_percents(symlen)?;
+        Ok(pcts
+            .into_iter()
             .filter(|(_, pct)| *pct != 0.0)
             .map(|(sym, pct)| (sym, -pct.log2()))
-            .collect::<HashMap<String, f32>>()
+            .collect::<HashMap<String, f32>>())
     }
     /// Get the auto-correlation of this Bitstream. Returns a vector of CorrelationResults.
     pub fn get_auto_correlation(&self) -> Vec<CorrelationResult> {
@@ -302,7 +330,6 @@ impl fmt::Display for Bitstream {
     }
 }
 
-// fn find_lcs TODO
 /// Find the common prefix bits across multiple Bitstreams.
 /// Use to identify potential preamble bits
 pub fn find_common_prefix(bitstrs: &[Bitstream]) -> String {
@@ -358,19 +385,23 @@ pub fn positionwise_entropy(bitstrs: &[Bitstream]) -> Vec<f32> {
 }
 /// Find the symbol alphabet (the full set of symbols that actually occur)
 /// across multiple Bitstreams.
-pub fn get_alphabet(bitstrs: &[Bitstream], symlen: usize, skip_bits: usize) -> HashSet<String> {
+pub fn get_alphabet(
+    bitstrs: &[Bitstream],
+    symlen: usize,
+    skip_bits: usize,
+) -> Result<HashSet<String>, BitkitError> {
     let mut counts: HashMap<String, u32> = HashMap::new();
     for bitstr in bitstrs {
         if skip_bits > 0 {
             // skip(0) makes a copy, so don't call it if skip_bits == 0
             bitstr
-                .skip(skip_bits)
-                .accumulate_sym_counts(symlen, &mut counts);
+                .skip(skip_bits)?
+                .accumulate_sym_counts(symlen, &mut counts)?;
         } else {
-            bitstr.accumulate_sym_counts(symlen, &mut counts);
+            bitstr.accumulate_sym_counts(symlen, &mut counts)?;
         }
     }
-    counts.into_keys().collect::<HashSet<String>>()
+    Ok(counts.into_keys().collect::<HashSet<String>>())
 }
 
 /// Return frequency counts for the symbol alphabet (the full set of symbols that actually occur)
@@ -379,18 +410,18 @@ pub fn get_alphabet_counts(
     bitstrs: &[Bitstream],
     symlen: usize,
     skip_bits: usize,
-) -> HashMap<String, u32> {
+) -> Result<HashMap<String, u32>, BitkitError> {
     let mut counts: HashMap<String, u32> = HashMap::new();
     for bitstr in bitstrs {
         if skip_bits > 0 {
             bitstr
-                .skip(skip_bits)
-                .accumulate_sym_counts(symlen, &mut counts);
+                .skip(skip_bits)?
+                .accumulate_sym_counts(symlen, &mut counts)?;
         } else {
-            bitstr.accumulate_sym_counts(symlen, &mut counts);
+            bitstr.accumulate_sym_counts(symlen, &mut counts)?;
         }
     }
-    counts
+    Ok(counts)
 }
 
 /// Return frequency counts for all possible substrings of length `strlen` across multiple
@@ -399,18 +430,18 @@ pub fn get_substr_counts(
     bitstrs: &[Bitstream],
     strlen: usize,
     skip_bits: usize,
-) -> HashMap<String, u32> {
+) -> Result<HashMap<String, u32>, BitkitError> {
     let mut counts: HashMap<String, u32> = HashMap::new();
     for bitstr in bitstrs {
         if skip_bits > 0 {
             bitstr
-                .skip(skip_bits)
-                .accumulate_substr_counts(strlen, &mut counts);
+                .skip(skip_bits)?
+                .accumulate_substr_counts(strlen, &mut counts)?;
         } else {
-            bitstr.accumulate_substr_counts(strlen, &mut counts);
+            bitstr.accumulate_substr_counts(strlen, &mut counts)?;
         }
     }
-    counts
+    Ok(counts)
 }
 
 /// Get the cross-correlation of two bitstreams. Returns a vector of CorrelationResults
@@ -475,19 +506,19 @@ mod tests {
     fn test_bits_to_syms() {
         let bs = Bitstream::new("000001010011100101110111".to_string()).unwrap();
         let sym_result = vec!["000", "001", "010", "011", "100", "101", "110", "111"];
-        assert_eq!(sym_result, bs.symbols(3));
+        assert_eq!(sym_result, bs.symbols(3).unwrap());
     }
     #[test]
     fn test_bits_to_hex() {
         let bs = Bitstream::new("1100101010110000000001011110".to_string()).unwrap();
         let hex_result = "cab005e".to_string();
-        assert_eq!(hex_result, bs.to_hex(4));
+        assert_eq!(hex_result, bs.to_hex(4).unwrap());
     }
     #[test]
     fn test_bits_to_hex_width_remainder() {
         let bs = Bitstream::new("11001010101100000000010111101".to_string()).unwrap();
         let hex_result = "cab005e1".to_string();
-        assert_eq!(hex_result, bs.to_hex(4));
+        assert_eq!(hex_result, bs.to_hex(4).unwrap());
     }
     #[test]
     fn test_bit_counts() {
@@ -495,7 +526,7 @@ mod tests {
         let mut hash_result: HashMap<String, u32> = HashMap::new();
         hash_result.insert(String::from("1"), 3);
         hash_result.insert(String::from("0"), 3);
-        assert_eq!(hash_result, bs.get_sym_counts(1));
+        assert_eq!(hash_result, bs.get_sym_counts(1).unwrap());
     }
     #[test]
     fn test_substr_counts() {
@@ -508,7 +539,7 @@ mod tests {
         hash_result.insert(String::from("001"), 1);
         hash_result.insert(String::from("111"), 1);
         hash_result.insert(String::from("010"), 1);
-        assert_eq!(hash_result, bs.get_substr_counts(3));
+        assert_eq!(hash_result, bs.get_substr_counts(3).unwrap());
         let bs2 = Bitstream::new("11011010000".to_string()).unwrap();
         hash_result
             .entry("110".to_string())
@@ -526,7 +557,10 @@ mod tests {
             .entry("100".to_string())
             .and_modify(|ct| *ct += 1);
         hash_result.insert("000".to_string(), 2);
-        assert_eq!(hash_result, get_substr_counts(&vec![bs, bs2], 3, 0));
+        assert_eq!(
+            hash_result,
+            get_substr_counts(&vec![bs, bs2], 3, 0).unwrap()
+        );
     }
     #[test]
     fn test_bit_pcts() {
@@ -534,7 +568,7 @@ mod tests {
         let mut hash_result: HashMap<String, f32> = HashMap::new();
         hash_result.insert(String::from("1"), 0.5);
         hash_result.insert(String::from("0"), 0.5);
-        assert_eq!(hash_result, bs.get_percents(1));
+        assert_eq!(hash_result, bs.get_percents(1).unwrap());
     }
     #[test]
     fn test_alphabet() {
@@ -545,21 +579,21 @@ mod tests {
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<HashSet<String>>(),
-            get_alphabet(&vec![bs_1.clone()], 1, 0)
+            get_alphabet(&vec![bs_1.clone()], 1, 0).unwrap()
         );
         assert_eq!(
             ["110", "101", "011"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<HashSet<String>>(),
-            get_alphabet(&vec![bs_1.clone()], 3, 0)
+            get_alphabet(&vec![bs_1.clone()], 3, 0).unwrap()
         );
         assert_eq!(
             ["1101", "0110", "1011", "0101", "0011"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<HashSet<String>>(),
-            get_alphabet(&vec![bs_1.clone(), bs_2.clone()], 4, 0)
+            get_alphabet(&vec![bs_1.clone(), bs_2.clone()], 4, 0).unwrap()
         );
         let hash_result = HashMap::from([
             (String::from("1101"), 1),
@@ -568,22 +602,25 @@ mod tests {
             (String::from("0101"), 1),
             (String::from("0011"), 1),
         ]);
-        assert_eq!(hash_result, get_alphabet_counts(&vec![bs_1, bs_2], 4, 0));
+        assert_eq!(
+            hash_result,
+            get_alphabet_counts(&vec![bs_1, bs_2], 4, 0).unwrap()
+        );
     }
     #[test]
     fn test_get_total_entropy() {
         let bs = Bitstream::new("10101010101010".to_string()).unwrap();
-        let ent = bs.get_total_entropy(1);
+        let ent = bs.get_total_entropy(1).unwrap();
         assert!((ent - 1.0).abs() < 1e-6);
         let bs = Bitstream::new("1110".to_string()).unwrap();
-        let ent = bs.get_total_entropy(1);
+        let ent = bs.get_total_entropy(1).unwrap();
         let h = -0.75 * (0.75_f32).log2() - 0.25 * (0.25_f32).log2();
         assert!((ent - h).abs() < 1e-6);
     }
     #[test]
     fn test_get_self_info() {
         let bs = Bitstream::new("10101010101010".to_string()).unwrap();
-        let self_info = bs.get_self_information(1);
+        let self_info = bs.get_self_information(1).unwrap();
         let mut self_info_itr = self_info.values();
         assert!((self_info_itr.next().unwrap() - 1.0).abs() < 1e-6);
         assert!((self_info_itr.next().unwrap() - 1.0).abs() < 1e-6);

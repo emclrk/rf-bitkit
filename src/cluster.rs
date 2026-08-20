@@ -73,8 +73,8 @@ pub fn cluster_hdbscan(
     let labels = Hdbscan::new(&hamm, hp)
         .cluster()
         .map_err(|e| BitkitError::MiscellaneousError(e.to_string()))?;
-    for ii in 0..labels.len() {
-        bmap.entry(labels[ii])
+    for (ii, lab) in labels.iter().enumerate() {
+        bmap.entry(*lab)
             .and_modify(|ct| ct.push(&bitstrs[ii]))
             .or_insert(vec![&bitstrs[ii]]);
     }
@@ -94,4 +94,26 @@ fn get_hamming_mat(bitstrs: &[Bitstream]) -> Result<Vec<Vec<f32>>, BitkitError> 
         }
     }
     Ok(dist_mat)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hamming_mat() {
+        let bs1 = Bitstream::new("0000".to_string()).unwrap();
+        let bs2 = Bitstream::new("1111".to_string()).unwrap();
+        let bs3 = Bitstream::new("1100".to_string()).unwrap();
+        let bitstrs = vec![bs1, bs2, bs3];
+        let mat = get_hamming_mat(&bitstrs).unwrap();
+        assert_eq!(mat[0][0], 0.0); // diagonals = 0
+        assert_eq!(mat[1][1], 0.0);
+        assert_eq!(mat[2][2], 0.0);
+        assert_eq!(mat[0][1], mat[1][0]); // should be symmetric
+        assert_eq!(mat[0][2], mat[2][0]);
+        assert_eq!(mat[1][2], mat[2][1]);
+        assert_eq!(mat[0][1], 4.0); // all bits differ
+        assert_eq!(mat[0][2], 2.0); // 2 bits differ
+    }
 }
