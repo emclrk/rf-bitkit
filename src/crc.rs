@@ -1,6 +1,6 @@
-use crate::linalg::{windowed_rank, BitMatrix};
+use crate::linalg::{BitMatrix, windowed_rank};
 use crate::proto::ProtocolStructure;
-use crate::{positionwise_entropy, BitkitError, Bitstream};
+use crate::{BitkitError, Bitstream, positionwise_entropy};
 use rand::prelude::*;
 use std::cmp::{max, min};
 
@@ -198,7 +198,7 @@ pub(crate) fn find_crc_from_varying(
     };
     let mut cands = construct_crc(&varying_bitmat, start_col, crc_width, base_rank)?;
     let sample = sampled_bitstrs[0].clone(); // TODO...does it matter which one we use for finding xor val?
-                                             // Score candidates
+    // Score candidates
     for cand in cands.iter_mut() {
         cand.frame_start_col = filtered_varying_locs[cand.start_col]; // update with location in frame
         cand.xor_val = get_xor_val(

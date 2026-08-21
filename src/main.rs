@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand};
 use rf_bitkit::cluster;
 use rf_bitkit::crc::find_crc;
-use rf_bitkit::linalg::{windowed_rank, BitMatrix, RankResult};
+use rf_bitkit::linalg::{BitMatrix, RankResult, windowed_rank};
 use rf_bitkit::proto::{ProtoField, ProtocolStructure};
 use rf_bitkit::{
-    find_common_prefix, from_txt, from_urh, get_alphabet_counts, get_cross_correlation,
-    get_substr_counts, positionwise_entropy, BitkitError, Bitstream,
+    BitkitError, Bitstream, find_common_prefix, from_txt, from_urh, get_alphabet_counts,
+    get_cross_correlation, get_substr_counts, positionwise_entropy,
 };
 use std::collections::HashMap;
 use std::fs::File;

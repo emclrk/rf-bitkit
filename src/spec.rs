@@ -1,5 +1,5 @@
-use crate::crc;
 use crate::BitkitError;
+use crate::crc;
 use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -91,7 +91,10 @@ impl FieldSpec {
                 refout,
                 covers,
             } => {
-                format!("# crc: field={field_name} poly=0x{:x} init=0x{:x} xorout=0x{:x} refin={refin} refout={refout} covers={}..{}", poly, init, xorval, covers.0,   covers.1)
+                format!(
+                    "# crc: field={field_name} poly=0x{:x} init=0x{:x} xorout=0x{:x} refin={refin} refout={refout} covers={}..{}",
+                    poly, init, xorval, covers.0, covers.1
+                )
             }
             Self::Checksum {
                 len: _,
@@ -466,7 +469,13 @@ impl PacketSpec {
                         if let Some(ex_sym) = exclude_sym.filter(|s| !s.is_empty()) {
                             let chunk_size = ex_sym.len();
                             if !len.is_multiple_of(chunk_size) {
-                                log::info!("{len} is not a multiple of chunk size {chunk_size} - may not be able to perfectly exclude {} from the data",ex_sym.iter().map(|b|(b'0'+b) as char).collect::<String>());
+                                log::info!(
+                                    "{len} is not a multiple of chunk size {chunk_size} - may not be able to perfectly exclude {} from the data",
+                                    ex_sym
+                                        .iter()
+                                        .map(|b| (b'0' + b) as char)
+                                        .collect::<String>()
+                                );
                             }
                             let mut output: Vec<u8> = vec![];
                             for chunk in (0..*len).collect::<Vec<usize>>().chunks(chunk_size) {
@@ -622,11 +631,13 @@ mod tests {
     #[test]
     fn test_new_packetspec() {
         assert!(PacketSpec::new(vec![]).is_err());
-        assert!(PacketSpec::new(vec![
-            (format!("test1"), FieldSpec::Fixed { bits: vec![] }),
-            (format!("test1"), FieldSpec::SyncWord { bits: vec![] })
-        ])
-        .is_err());
+        assert!(
+            PacketSpec::new(vec![
+                (format!("test1"), FieldSpec::Fixed { bits: vec![] }),
+                (format!("test1"), FieldSpec::SyncWord { bits: vec![] })
+            ])
+            .is_err()
+        );
         let crc = FieldSpec::Crc {
             width: 20,
             poly: 7u128,
@@ -637,11 +648,13 @@ mod tests {
             covers: (format!("payload"), format!("payload")),
         };
         // giving it wrong names - crc1 covers "payload"; should fail
-        assert!(PacketSpec::new(vec![
-            (format!("data"), FieldSpec::Payload { len: 25 }),
-            (format!("crc1"), crc),
-        ])
-        .is_err());
+        assert!(
+            PacketSpec::new(vec![
+                (format!("data"), FieldSpec::Payload { len: 25 }),
+                (format!("crc1"), crc),
+            ])
+            .is_err()
+        );
     }
     #[test]
     fn test_write_spec() {

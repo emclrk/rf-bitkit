@@ -42,8 +42,7 @@ impl ProtocolStructure {
     /// Bit positions with zero entropy become fixed fields, and bit positions with non-zero
     /// entropy become varying fields.
     pub fn infer_structure(poswise_ents: &[f32]) -> Self {
-        Self::infer_structure_tolerance(poswise_ents, -1.0) // set epsilon to -1 to disable tolerance
-                                                            // checking
+        Self::infer_structure_tolerance(poswise_ents, -1.0) // set epsilon to -1 to disable tolerance checking
     }
     /// Takes a vector of positionwise entropies and uses it to infer the protocol structure.
     /// Bit positions with an entropy of zero become fixed fields; bit positions with an
@@ -148,11 +147,7 @@ impl ProtocolStructure {
             locs.iter()
                 .map(|&ii| {
                     let bit = bs.bit_at(ii);
-                    if bit == 1 {
-                        '1'
-                    } else {
-                        '0'
-                    }
+                    if bit == 1 { '1' } else { '0' }
                 })
                 .collect::<String>(),
             locs,
@@ -191,11 +186,7 @@ impl ProtocolStructure {
             locs.iter()
                 .map(|&ii| {
                     let bit = bs.bit_at(ii);
-                    if bit == 1 {
-                        '1'
-                    } else {
-                        '0'
-                    }
+                    if bit == 1 { '1' } else { '0' }
                 })
                 .collect::<String>(),
             locs,

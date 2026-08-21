@@ -1,5 +1,5 @@
 use crate::proto::ProtocolStructure;
-use crate::{positionwise_entropy, BitkitError, Bitstream};
+use crate::{BitkitError, Bitstream, positionwise_entropy};
 use hdbscan::{DistanceMetric, Hdbscan, HdbscanHyperParams};
 use std::collections::HashMap;
 
@@ -34,11 +34,7 @@ pub fn cluster_by_selected<'a>(
             .iter()
             .map(|ii| {
                 let bitval = bs.bit_at(*ii);
-                if bitval == 0 {
-                    '0'
-                } else {
-                    '1'
-                }
+                if bitval == 0 { '0' } else { '1' }
             })
             .collect::<String>();
         bmap.entry(bits)
