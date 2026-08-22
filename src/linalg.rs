@@ -104,9 +104,9 @@ impl BitMatrix {
         })
     }
     /// Return a new matrix that is a vertical window of this matrix.
-    /// Size will be num_cols x height
+    /// Size will be height x num_cols
     pub fn row_window(&self, height: usize) -> Result<Self, BitkitError> {
-        if height > self.num_rows {
+        if height > self.num_rows || height == 0 {
             return Err(BitkitError::IndexError(height, self.num_rows));
         }
         Ok(BitMatrix {
@@ -354,6 +354,7 @@ pub(crate) fn mat_mul_gf2(mat1: &BitMatrix, mat2: &BitMatrix) -> Result<BitMatri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_window_fn() {
@@ -374,6 +375,9 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(expect, matrix.window(1, 3).unwrap());
+        assert!(matrix.window(7, 12).is_err());
+        assert!(matrix.window(1, 7).is_err());
+        assert!(matrix.window(0, 0).is_err());
     }
     #[test]
     fn test_dot_prod_gf2() {
@@ -383,6 +387,8 @@ mod tests {
         let v1 = vec![1, 0, 1, 1, 1, 1];
         let v2 = vec![1, 1, 0, 1, 1, 0];
         assert_eq!(dot_prod_gf2(&v1, &v2).unwrap(), 1);
+        let v3 = vec![1, 0, 1];
+        assert!(dot_prod_gf2(&v1, &v3).is_err());
     }
     #[test]
     fn test_matmul_gf2_identity() {
@@ -418,6 +424,15 @@ mod tests {
         ])
         .unwrap();
         assert_eq!((&mat1 * &mat1_t).unwrap(), expect);
+        let mat2 = BitMatrix::new(&vec![
+            Bitstream::new("00110111000101".to_string()).unwrap(),
+            Bitstream::new("11001000101111".to_string()).unwrap(),
+            Bitstream::new("01010101010101".to_string()).unwrap(),
+            Bitstream::new("11001100110011".to_string()).unwrap(),
+        ])
+        .unwrap();
+        // mismatched dimensions
+        assert!((&mat1 * &mat2).is_err());
     }
     #[test]
     fn test_row_ech() {
@@ -483,4 +498,140 @@ mod tests {
         .unwrap();
         assert_eq!(ns, expected);
     }
+    #[test]
+    fn test_row_window() {
+        let mat = BitMatrix::new(&vec![
+            Bitstream::new(String::from("10001")).unwrap(),
+            Bitstream::new(String::from("01001")).unwrap(),
+            Bitstream::new(String::from("00100")).unwrap(),
+            Bitstream::new(String::from("00011")).unwrap(),
+            Bitstream::new(String::from("00000")).unwrap(),
+        ])
+        .unwrap();
+        let expected = BitMatrix::new(&vec![
+            Bitstream::new(String::from("10001")).unwrap(),
+            Bitstream::new(String::from("01001")).unwrap(),
+            Bitstream::new(String::from("00100")).unwrap(),
+        ])
+        .unwrap();
+        let win = mat.row_window(3).unwrap();
+        assert_eq!(win.num_rows(), 3);
+        assert_eq!(win.num_cols(), 5);
+        assert_eq!(win, expected);
+        assert!(mat.row_window(10).is_err());
+        assert!(mat.row_window(0).is_err());
+    }
+    #[test]
+    fn test_err_paths() {
+        assert!(BitMatrix::new(&vec![]).is_err());
+        assert!(
+            BitMatrix::new(&vec![
+                Bitstream::new("101001".to_string()).unwrap(),
+                Bitstream::new("010".to_string()).unwrap()
+            ])
+            .is_err()
+        );
+    }
+    fn matrix_from_bitvec(_rows: usize, cols: usize, bits: &[u8]) -> BitMatrix {
+        let bitstrs = bits
+            .chunks(cols)
+            .map(|row| {
+                let s: String = row
+                    .iter()
+                    .map(|&b| if b == 0 { '0' } else { '1' })
+                    .collect();
+                Bitstream::new(s).unwrap()
+            })
+            .collect::<Vec<_>>();
+        BitMatrix::new(&bitstrs).unwrap()
+    }
+    fn bitstream_strategy() -> impl Strategy<Value = (usize, usize, Vec<u8>)> {
+        (1usize..100, 1usize..100)
+            .prop_flat_map(|(nr, nc)| (Just(nr), Just(nc), prop::collection::vec(0u8..=1, nr * nc)))
+    }
+    #[rustfmt::skip]
+    proptest! {
+        #[test]
+        fn prop_transpose((rows, cols, bits) in bitstream_strategy()) {
+            let bitmat = matrix_from_bitvec(rows, cols, &bits);
+            let tx = bitmat.transpose();
+            prop_assert_eq!(tx.num_rows(), bitmat.num_cols());  // num_rows -> num_cols
+            prop_assert_eq!(tx.num_cols(), bitmat.num_rows());  // num_cols -> num_rows
+            prop_assert_eq!(bitmat.mat_rank(), tx.mat_rank());  // transpose doesnt change rank
+            for row in 0..rows {
+                for col in 0..cols {
+                    prop_assert_eq!(bitmat[row][col], tx[col][row]);
+                }
+            }
+            let txt = tx.transpose();
+            prop_assert_eq!(txt, bitmat); // transpose(transpose(A)) == A
+        }
+        #[test]
+        fn prop_rank_rref((rows, cols, bits) in bitstream_strategy()) {
+            let bitmat = matrix_from_bitvec(rows, cols, &bits);
+            let orig_rank = bitmat.mat_rank();
+            let nullspace = bitmat.nullspace();
+            let bitmat_rref = bitmat.clone().rref();
+            let rref_rank = bitmat_rref.mat_rank();
+            let rref_rref = bitmat_rref.clone().rref();
+            // rank(A) + nullity(A) = num_cols(A)
+            prop_assert_eq!(orig_rank + nullspace.num_cols(), bitmat.num_cols());
+            prop_assert_eq!(orig_rank, rref_rank);   // rank(A) = rank(rref(A))
+            prop_assert_eq!(bitmat_rref, rref_rref); // rref(A) = rref(rref(A))
+        }
+        #[test]
+        fn prop_window((rows, cols, bits) in bitstream_strategy()) {
+            let bitmat = matrix_from_bitvec(rows, cols, &bits);
+            for col_start in 0..cols {
+                let max_width = cols - col_start;
+                let w = bitmat.window(col_start, max_width).unwrap();
+                prop_assert_eq!(w.num_rows(), rows);
+                prop_assert_eq!(w.num_cols(), max_width);
+                for row in 0..rows {
+                    for col in 0..max_width {
+                        prop_assert_eq!(w[row][col], bitmat[row][col_start + col]);
+                    }
+                }
+            }
+        }
+        #[test]
+        fn prop_windowed_rank_monotone((rows, cols, bits) in bitstream_strategy()) {
+            let bitmat = matrix_from_bitvec(rows, cols, &bits);
+            let ranks = windowed_rank(&bitmat);
+            for window in ranks.windows(2) {
+                prop_assert!(window[1].rank >= window[0].rank);
+            }
+            prop_assert_eq!(ranks.last().unwrap().rank, bitmat.mat_rank());
+        }
+        #[test]
+        fn prop_nullspace((rows, cols, bits) in bitstream_strategy()) {
+            let bitmat = matrix_from_bitvec(rows, cols, &bits);
+            let nullspace = bitmat.nullspace();
+            let result = (&bitmat * &nullspace).unwrap();
+            prop_assert!(result.is_zero());
+        }
+        #[test]
+        fn prop_affine_removal((rows, cols, bits) in bitstream_strategy()) {
+            let mut bitmat = matrix_from_bitvec(rows, cols, &bits);
+            let orig_rank = bitmat.mat_rank();
+            bitmat.remove_affine();
+            let new_rank = bitmat.mat_rank();
+            prop_assert!(bitmat[0].iter().all(|b| *b == 0));
+            prop_assert!(new_rank >= orig_rank.saturating_sub(1));
+        }
+        #[test]
+        fn prop_row_window((rows, cols, bits) in bitstream_strategy()) {
+            let bitmat = matrix_from_bitvec(rows, cols, &bits);
+            for ht in 1..rows {
+                let win = bitmat.row_window(ht).unwrap();
+                prop_assert_eq!(win.num_rows(), ht);
+                prop_assert_eq!(win.num_cols(), cols);
+                for ii in 0..ht {
+                    for jj in 0..cols {
+                        prop_assert_eq!(bitmat[ii][jj], win[ii][jj]);
+                    }
+                }
+            }
+        }
+    } // proptest
 } // mod tests

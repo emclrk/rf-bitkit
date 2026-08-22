@@ -32,9 +32,15 @@ pub fn cluster_by_selected<'a>(
         }
         let bits = positions
             .iter()
-            .map(|ii| {
-                let bitval = bs.bit_at(*ii);
-                if bitval == 0 { '0' } else { '1' }
+            .map(|ii| match bs.bit_at(*ii) {
+                Ok(bitval) => {
+                    if bitval == 0 {
+                        '0'
+                    } else {
+                        '1'
+                    }
+                }
+                Err(_e) => unreachable!(),
             })
             .collect::<String>();
         bmap.entry(bits)
@@ -95,7 +101,19 @@ fn get_hamming_mat(bitstrs: &[Bitstream]) -> Result<Vec<Vec<f32>>, BitkitError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::{bitstream_strategy, bitstrs_from_flat};
+    use proptest::prelude::*;
 
+    fn get_some_bitstrs() -> Vec<Bitstream> {
+        vec![
+            Bitstream::new("1000101111".to_string()).unwrap(),
+            Bitstream::new("1001100010".to_string()).unwrap(),
+            Bitstream::new("1101100010".to_string()).unwrap(),
+            Bitstream::new("0000101100".to_string()).unwrap(),
+            Bitstream::new("1000101110".to_string()).unwrap(),
+            Bitstream::new("1101100011".to_string()).unwrap(),
+        ]
+    }
     #[test]
     fn test_hamming_mat() {
         let bs1 = Bitstream::new("0000".to_string()).unwrap();
@@ -112,4 +130,129 @@ mod tests {
         assert_eq!(mat[0][1], 4.0); // all bits differ
         assert_eq!(mat[0][2], 2.0); // 2 bits differ
     }
-}
+    #[test]
+    fn test_cluster_length() {
+        let bitstrs = vec![
+            Bitstream::new("1100".to_string()).unwrap(),
+            Bitstream::new("1010110".to_string()).unwrap(),
+            Bitstream::new("01100".to_string()).unwrap(),
+            Bitstream::new("1010".to_string()).unwrap(),
+        ];
+        let clusters = cluster_by_length(&bitstrs).unwrap();
+        let expected = HashMap::from([
+            (4, vec![&bitstrs[0], &bitstrs[3]]),
+            (5, vec![&bitstrs[2]]),
+            (7, vec![&bitstrs[1]]),
+        ]);
+        assert_eq!(clusters, expected);
+    }
+    #[test]
+    fn test_cluster_selected() {
+        let bitstrs = get_some_bitstrs();
+        let clusters = cluster_by_selected(&bitstrs, &vec![2, 4, 6]).unwrap();
+        let expected = HashMap::from([
+            (
+                "011".to_string(),
+                vec![&bitstrs[0], &bitstrs[3], &bitstrs[4]],
+            ),
+            (
+                "010".to_string(),
+                vec![&bitstrs[1], &bitstrs[2], &bitstrs[5]],
+            ),
+        ]);
+        assert_eq!(clusters, expected);
+    }
+    #[test]
+    fn test_cluster_epsilon() {
+        let bitstrs = get_some_bitstrs();
+        let clusters = cluster_by_ambiguous_bits(&bitstrs, 0.7).unwrap();
+        let expected = HashMap::from([
+            ("00".to_string(), vec![&bitstrs[3]]),
+            (
+                "11".to_string(),
+                vec![
+                    &bitstrs[0],
+                    &bitstrs[1],
+                    &bitstrs[2],
+                    &bitstrs[4],
+                    &bitstrs[5],
+                ],
+            ),
+        ]);
+        assert_eq!(clusters, expected);
+    }
+    #[test]
+    fn test_cluster_hdbscan() {
+        let bitstrs = vec![
+            Bitstream::new("0000".to_string()).unwrap(),
+            Bitstream::new("0010".to_string()).unwrap(),
+            Bitstream::new("0001".to_string()).unwrap(),
+            Bitstream::new("1111".to_string()).unwrap(),
+            Bitstream::new("0111".to_string()).unwrap(),
+            Bitstream::new("1011".to_string()).unwrap(),
+        ];
+        let clusters = cluster_hdbscan(&bitstrs, 2).unwrap();
+        assert_eq!(clusters.len(), 2);
+        assert!(clusters.iter().all(|(_k, v)| v.len() == 3));
+        assert!(!clusters.iter().any(|(k, _v)| *k == -1));
+    }
+    fn varying_len_bitstream_strategy() -> impl Strategy<Value = Vec<Bitstream>> {
+        prop::collection::vec(
+            (1usize..20).prop_flat_map(|lb| prop::collection::vec(0u8..=1, lb)),
+            1..10,
+        )
+        .prop_map(|vecs| {
+            vecs.into_iter()
+                .map(|bits| {
+                    let s: String = bits
+                        .iter()
+                        .map(|&b| if b == 0 { '0' } else { '1' })
+                        .collect();
+                    Bitstream::new(s).unwrap()
+                })
+                .collect()
+        })
+    }
+    #[rustfmt::skip]
+    proptest! {
+        #[test]
+        fn prop_cluster_length(bitstrs in varying_len_bitstream_strategy()) {
+            let clusters = cluster_by_length(&bitstrs).unwrap();
+            let total: usize = clusters.values().map(|v| v.len()).sum();
+            prop_assert_eq!(total, bitstrs.len());
+            for (key, val) in clusters.iter() {
+                for bs in val.iter() {
+                    prop_assert_eq!(*key, bs.len());
+                }
+            }
+            
+        }
+        #[test]
+        fn prop_hamming_matrix((num_bs, len_bs, bits) in bitstream_strategy()) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            let mat = get_hamming_mat(&bitstrs).unwrap();
+            prop_assert!(
+                mat.iter()
+                    .all(|row| row.iter().all(|val| *val >= 0.0 && *val <= len_bs as f32))
+            );
+            for ii in 0..num_bs {
+                prop_assert_eq!(mat[ii][ii], 0.0);
+                for jj in 0..num_bs {
+                    prop_assert_eq!(mat[ii][jj], mat[jj][ii]);
+                }
+            }
+        }
+        #[test]
+        fn prop_cluster_total((num_bs, len_bs, bits, pos) in bitstream_strategy().prop_flat_map(
+            |(nb, lb, bits)| { 
+                let pos_strat = prop::collection::vec(0usize..lb, 1..=lb);
+                (Just(nb), Just(lb), Just(bits), pos_strat)
+            })
+        ) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            let clusters = cluster_by_selected(&bitstrs, &pos).unwrap();
+            let total: usize = clusters.iter().map(|(_,v)|v.len()).sum();
+            assert_eq!(total, num_bs);
+        }
+    } // proptest
+} // mod tests

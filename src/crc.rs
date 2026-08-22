@@ -288,6 +288,7 @@ fn reflect_mat(mut bitmat: BitMatrix, start_col: usize, num_bits: usize) -> BitM
 }
 /// Reflect the bits in the data vector. If data is byte aligned, each byte will be individually
 /// reflected; if not (as in, say, CRC-5/USB header), the entire thing will be reflected.
+/// Note...may be the source of our bug
 pub(crate) fn reflect_vec(data: &[u8]) -> Vec<u8> {
     if data.len().is_multiple_of(8) {
         data.chunks(8)
@@ -358,7 +359,9 @@ fn get_xor_val(bs: &Bitstream, poly: &[u8], start_col: usize, refin: bool, refou
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::from_txt;
+    use crate::{bitvec_to_u128, from_txt};
+    use proptest::prelude::*;
+
     fn test_crc(
         bitstrs: &[Bitstream],
         expected_poly: u128,
@@ -395,7 +398,7 @@ mod tests {
         // refin=false refout=false, nonzero init and xorout
         // also tests alternating data and fixed fields
         let bitstrs = from_txt("./tests/test_packets_00.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(1), &[], vec![]);
+        let result = test_crc(&bitstrs, 0x3, Some(10), &[], vec![]);
         assert_eq!(result.frame_start_col, 108);
     }
     #[test]
@@ -462,4 +465,45 @@ mod tests {
         let exclude = vec![11];
         let _ = test_crc(&bitstrs, 0x7, None, &exclude, vec![]);
     }
-}
+    #[rustfmt::skip]
+    proptest! {
+        #[test]
+        fn prop_reflect_vec(
+            (_num_bits, bits) in ((1usize..20).prop_flat_map(|nb|
+                (Just(nb), prop::collection::vec(0u8..=1u8, nb)))
+        )) {
+           let refl_vec = reflect_vec(&bits);
+           let refl_vec2 =  reflect_vec(&refl_vec);
+           let bitvec_u128:u128 = bitvec_to_u128(&bits);
+           let refl_bits = reflect_bits(bitvec_u128, bits.len());
+           let refl_bits2 = reflect_bits(refl_bits, bits.len());
+           prop_assert_eq!(bits, refl_vec2);
+           prop_assert_eq!(bitvec_u128, refl_bits2);
+        }
+        // fn crc_zero_init(poly: &[u8], data_vec: &[u8], refin: bool, refout: bool) -> u128 
+        // fn get_xor_val(bs: &Bitstream, poly: &[u8], start_col: usize, refin: bool, refout: bool) -> u128 
+        // fn gen_crc(width: usize, poly: u128, init: u128, refin: bool, refout: bool, xorval: u128, data: &[u8]) -> Vec<u8>
+        // poly, width, refin, refout,
+        #[test]
+        fn prop_gencrc_crczero(
+            (width, poly, refin, refout, data) in (1usize..=16).prop_flat_map(|width| {
+                let max_val = (1u128 << width) - 1;
+                (
+                    Just(width),
+                    0u128..=max_val, // poly
+                    any::<bool>(), // refin
+                    any::<bool>(), // refout
+                    prop::collection::vec(0u8..=1u8, 1..=64)
+                )
+        })
+        ) {
+            let mut poly_vec: Vec<u8> = (0..width).map(|ii| ((poly >> ii) & 1) as u8).collect();
+            poly_vec.push(1);  // leading 1
+            let gen_result = bitvec_to_u128(
+                &crate::spec::PacketSpec::gen_crc(width, poly, 0, refin, refout, 0, &data)
+            );
+            let zero_init_result = crc_zero_init(&poly_vec, &data, refin, refout);
+            prop_assert_eq!(gen_result, zero_init_result);
+        }
+    } // proptest
+} // mod tests

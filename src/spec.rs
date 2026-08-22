@@ -1,5 +1,5 @@
 use crate::BitkitError;
-use crate::crc;
+use crate::{bitvec_to_u128, crc, u128_to_bitvec};
 use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -26,7 +26,7 @@ impl FromStr for FieldType {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FieldSpec {
     Preamble {
         len: usize,
@@ -546,7 +546,7 @@ impl PacketSpec {
         }
         Ok(contents)
     }
-    fn gen_crc(
+    pub(crate) fn gen_crc(
         width: usize,
         poly: u128,
         init: u128,
@@ -604,19 +604,10 @@ impl PacketSpec {
     }
 } // impl PacketSpec
 
-pub fn u128_to_bitvec(val: u128, len: usize) -> Vec<u8> {
-    (0..len)
-        .map(|ii| ((val >> (len - 1 - ii)) & 1) as u8)
-        .collect()
-}
-pub fn bitvec_to_u128(bits: &[u8]) -> u128 {
-    bits.iter().enumerate().fold(0u128, |acc, (ii, &bit)| {
-        acc | (bit as u128) << (bits.len() - 1 - ii)
-    })
-}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_bitvec_to_hex() {
@@ -630,14 +621,17 @@ mod tests {
     }
     #[test]
     fn test_new_packetspec() {
-        assert!(PacketSpec::new(vec![]).is_err());
-        assert!(
+        assert!(matches!(
+            PacketSpec::new(vec![]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        assert!(matches!(
             PacketSpec::new(vec![
                 (format!("test1"), FieldSpec::Fixed { bits: vec![] }),
                 (format!("test1"), FieldSpec::SyncWord { bits: vec![] })
-            ])
-            .is_err()
-        );
+            ]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
         let crc = FieldSpec::Crc {
             width: 20,
             poly: 7u128,
@@ -645,16 +639,97 @@ mod tests {
             refin: false,
             refout: false,
             xorval: 0u128,
-            covers: (format!("payload"), format!("payload")),
+            covers: (format!("payload"), format!("preamble")),
         };
         // giving it wrong names - crc1 covers "payload"; should fail
-        assert!(
+        assert!(matches!(
             PacketSpec::new(vec![
                 (format!("data"), FieldSpec::Payload { len: 25 }),
+                (format!("crc1"), crc.clone()),
+            ]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        // put crc covers in the wrong order (covers.1 before covers.0)
+        assert!(matches!(
+            PacketSpec::new(vec![
+                (format!("preamble"), FieldSpec::Preamble { len: 8 }),
+                (format!("payload"), FieldSpec::Payload { len: 25 }),
                 (format!("crc1"), crc),
-            ])
-            .is_err()
-        );
+            ]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+    }
+    #[test]
+    fn test_excludesym() {
+        let spec =
+            PacketSpec::new(vec![(format!("payload"), FieldSpec::Payload { len: 2 })]).unwrap();
+        let packs = spec.gen_packets(500, Some(&vec![1, 0])).unwrap();
+        for pack in packs {
+            assert!(!pack.contains(&"10".to_string()));
+        }
+    }
+    #[test]
+    fn test_parse_header() {
+        let notype = "# field: name=sync range=16..48 val=0xabc".to_string();
+        assert!(matches!(
+            PacketSpec::parse_header(&vec![notype]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        let badtype = "# field: name=sync type=dummy range=16..48 val=0xabc".to_string();
+        assert!(matches!(
+            PacketSpec::parse_header(&vec![badtype]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        let noname = "# field: type=sync_word range=16..48 val=0xabc".to_string();
+        assert!(matches!(
+            PacketSpec::parse_header(&vec![noname]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        let noval = "# field: name=f1 type=fixed range=16..24".to_string();
+        assert!(matches!(
+            PacketSpec::parse_header(&vec![noval]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        let badrange = "# field: name=f1 type=fixed range=16::24 val=0xabc".to_string();
+        assert!(matches!(
+            PacketSpec::parse_header(&vec![badrange]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        let badrange2 = "# field: name=f1 type=fixed range=ab..cd val=0xabc".to_string();
+        assert!(matches!(
+            PacketSpec::parse_header(&vec![badrange2]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        let crcfield = "# field: name=crc type=crc range=108..112".to_string();
+        // missing # crc: line - should fail
+        assert!(matches!(
+            PacketSpec::parse_header(&vec![crcfield]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        let checkfield = "# field: name=cx type=checksum range=108..112".to_string();
+        // missing # checksum: line
+        assert!(matches!(
+            PacketSpec::parse_header(&vec![checkfield]),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+    }
+    #[test]
+    fn test_parse_checksum() {
+        let nofield = "# checksum: label=xor covers=data..data".to_string();
+        assert!(matches!(
+            PacketSpec::parse_checksum(&nofield),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        let nolabel = "# checksum: field=cx covers=data..data".to_string();
+        assert!(matches!(
+            PacketSpec::parse_checksum(&nolabel),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        let nocovers = "# checksum: field=cx label=xor".to_string();
+        assert!(matches!(
+            PacketSpec::parse_checksum(&nocovers),
+            Err(BitkitError::InvalidSpec(_))
+        ));
     }
     #[test]
     fn test_write_spec() {
@@ -695,6 +770,19 @@ mod tests {
             unreachable!();
         }
         let _contents = packet.gen_packets(10, None);
+
+        let checksum = FieldSpec::Checksum {
+            len: 8,
+            covers: ("payload".to_string(), "payload".to_string()),
+            label: "xor".to_string(),
+        };
+        let spec = PacketSpec::new(vec![
+            (format!("preamble"), FieldSpec::Preamble { len: 8 }),
+            (format!("payload"), FieldSpec::Payload { len: 25 }),
+            (format!("cx"), checksum),
+        ])
+        .unwrap();
+        let _ = spec.gen_packets(10, None);
     }
     #[test]
     fn test_crc() {
@@ -714,4 +802,147 @@ mod tests {
         let checkval = PacketSpec::gen_crc(16, poly, init, refin, refout, xorval, &input);
         assert_eq!(check, bitvec_to_u128(&checkval));
     }
-}
+    #[test]
+    fn test_fieldtype() {
+        assert!(matches!(
+            FieldType::from_str("balloon"),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+    }
+    #[test]
+    fn test_u128_bitvec_conversion() {
+        let data = vec![1, 0, 1, 1, 0, 1];
+        assert_eq!(bitvec_to_u128(&data), 45);
+        assert_eq!(u128_to_bitvec(45 as u128, data.len()), data);
+    }
+    #[test]
+    fn test_get_checksum() {
+        let data = u128_to_bitvec(10505379, 24);
+        // 10100000 160
+        // 01001100 76
+        // 10100011 163
+        assert_eq!(
+            bitvec_to_u128(&PacketSpec::get_checksum(&data, "xor", 8).unwrap()),
+            79
+        );
+        assert_eq!(
+            bitvec_to_u128(&PacketSpec::get_checksum(&data, "addmod256", 8).unwrap()),
+            143
+        );
+        assert!(matches!(
+            PacketSpec::get_checksum(&data, "unknown", 8),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        let data_nonaligned = u128_to_bitvec(1025, 11);
+        assert!(matches!(
+            PacketSpec::get_checksum(&data_nonaligned, "xor", 8),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+        assert!(matches!(
+            PacketSpec::get_checksum(&data_nonaligned, "addmod256", 8),
+            Err(BitkitError::InvalidSpec(_))
+        ));
+    }
+    // proptest helpers
+    // single field strategy
+    fn arb_data_field() -> impl Strategy<Value = FieldSpec> {
+        prop_oneof![
+            (1usize..=16).prop_map(|len| FieldSpec::Preamble { len }),
+            prop::collection::vec(0u8..=1u8, 1..=16).prop_map(|bits| FieldSpec::SyncWord { bits }),
+            prop::collection::vec(0u8..=1u8, 1..=16).prop_map(|bits| FieldSpec::Fixed { bits }),
+            (1usize..=32).prop_map(|len| FieldSpec::Payload { len }),
+        ]
+    }
+    // full spec strategy
+    fn arb_packet_spec_crc() -> impl Strategy<Value = PacketSpec> {
+        prop::collection::vec(arb_data_field(), 1..=5)
+            .prop_flat_map(|fields| {
+                let n = fields.len();
+                (
+                    Just(fields),
+                    0..n, // field for covers.0
+                    0..n, // field for covers.1
+                    // CRC params
+                    any::<u8>(),   // poly
+                    any::<u8>(),   // init
+                    any::<bool>(), // refin
+                    any::<bool>(), // refout
+                    any::<u8>(),   // xorval
+                )
+            })
+            .prop_map(|(fields, a, b, poly, init, refin, refout, xorval)| {
+                let (lo, hi) = (a.min(b), a.max(b));
+                let mut named: Vec<(String, FieldSpec)> = fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(k, f)| (format!("f{k}"), f))
+                    .collect();
+                named.push((
+                    String::from("crc"),
+                    FieldSpec::Crc {
+                        width: 8,
+                        poly: poly as u128,
+                        init: init as u128,
+                        refin,
+                        refout,
+                        xorval: xorval as u128,
+                        covers: (format!("f{lo}"), format!("f{hi}")),
+                    },
+                ));
+                PacketSpec::new(named).unwrap()
+            })
+    }
+    fn arb_packet_spec_checksum() -> impl Strategy<Value = PacketSpec> {
+        prop::collection::vec(arb_data_field(), 1..=5)
+            .prop_flat_map(|fields| {
+                let n = fields.len();
+                (
+                    Just(fields),
+                    0..n, // field for covers.0
+                    0..n, // field for covers.1
+                    0..=8usize,
+                )
+            })
+            .prop_map(|(fields, a, b, len)| {
+                let (lo, hi) = (a.min(b), a.max(b));
+                let mut named: Vec<(String, FieldSpec)> = fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(k, f)| (format!("f{k}"), f))
+                    .collect();
+                named.push((
+                    String::from("chx"),
+                    FieldSpec::Checksum {
+                        len,
+                        covers: (format!("f{lo}"), format!("f{hi}")),
+                        label: "".to_string(),
+                    },
+                ));
+                PacketSpec::new(named).unwrap()
+            })
+    }
+    #[rustfmt::skip]
+    proptest! {
+        #[test]
+        fn prop_roundtrip_crc(spec in arb_packet_spec_crc()) {
+            let orig = spec.gen_header();
+            let roundtrip = PacketSpec::parse_header(&orig).unwrap().gen_header();
+            prop_assert_eq!(orig, roundtrip);
+        }
+        #[test]
+        fn prop_roundtrip_cx(spec in arb_packet_spec_checksum()) {
+            let orig = spec.gen_header();
+            let roundtrip = PacketSpec::parse_header(&orig).unwrap().gen_header();
+            prop_assert_eq!(orig, roundtrip);
+        }
+        #[test]
+        fn prop_u128_vec(
+            (nbits, bits) in (1usize..20).prop_flat_map(|nb| (Just(nb), prop::collection::vec(0u8..=1u8, nb)))) {
+            let val = bitvec_to_u128(&bits);
+            let bitvec = u128_to_bitvec(val, nbits);
+            let val2 = bitvec_to_u128(&bitvec);
+            prop_assert_eq!(val, val2);
+            prop_assert_eq!(bits, bitvec);
+        }
+    } // proptest
+} // mod tests

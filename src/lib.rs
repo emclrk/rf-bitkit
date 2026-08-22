@@ -14,7 +14,7 @@ pub mod proto;
 pub mod spec;
 
 /// Wrapper struct for a string of demodulated bits
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct Bitstream {
     #[serde(rename = "@bits")]
     bits: String,
@@ -133,10 +133,10 @@ impl Bitstream {
         self.bits.to_string()
     }
     pub fn skip(&self, nbits: usize) -> Result<Self, BitkitError> {
-        if nbits >= self.len() {
-            Err(BitkitError::IndexError(nbits, self.len()))
-        } else {
+        if nbits < self.bits.len() {
             Ok(Self::new(self.bits[nbits..].to_string())?)
+        } else {
+            Err(BitkitError::IndexError(nbits, self.len()))
         }
     }
     /// Number of bits in the Bitstream
@@ -148,8 +148,12 @@ impl Bitstream {
         self.bits.is_empty()
     }
     /// Use to index into the Bitstream
-    pub fn bit_at(&self, index: usize) -> u8 {
-        self.bits.as_bytes()[index] - b'0'
+    pub fn bit_at(&self, index: usize) -> Result<u8, BitkitError> {
+        if index < self.bits.len() {
+            Ok(self.bits.as_bytes()[index] - b'0')
+        } else {
+            Err(BitkitError::IndexError(index, self.bits.len()))
+        }
     }
     pub fn bits_as_bytes(&self) -> Vec<u8> {
         self.bits.as_bytes().iter().map(|bit| bit - b'0').collect()
@@ -161,9 +165,7 @@ impl Bitstream {
     /// if the Bitstream is not evenly divisible by `symlen`.
     pub fn symbols(&self, symlen: usize) -> Result<Vec<String>, BitkitError> {
         if symlen == 0 {
-            Err(BitkitError::MiscellaneousError(
-                "Cannot create symbols of length 0".to_string(),
-            ))
+            Err(BitkitError::EmptyString)
         } else {
             Ok(self
                 .bits
@@ -220,9 +222,7 @@ impl Bitstream {
             return Err(BitkitError::IndexError(strlen, self.len()));
         }
         if strlen == 0 {
-            return Err(BitkitError::MiscellaneousError(
-                "Can't create 0-length substrings".to_string(),
-            ));
+            return Err(BitkitError::EmptyString);
         }
         let i_range = self.len() - strlen + 1;
         for i in 0..i_range {
@@ -293,7 +293,8 @@ impl Bitstream {
                     // out of range
                     continue;
                 }
-                sum += if self.bit_at(n as usize) == self.bit_at((n - k) as usize) {
+                sum += if self.bit_at(n as usize).unwrap() == self.bit_at((n - k) as usize).unwrap()
+                {
                     1
                 } else {
                     0
@@ -364,7 +365,7 @@ pub fn positionwise_entropy(bitstrs: &[Bitstream]) -> Vec<f32> {
     let mut probs = vec![0.0f32; min_len];
     for bs in bitstrs {
         for (idx, prob) in probs.iter_mut().enumerate().take(min_len) {
-            *prob += bs.bit_at(idx) as f32;
+            *prob += bs.bit_at(idx).unwrap() as f32;
         }
     }
     for prob in probs.iter_mut() {
@@ -459,7 +460,7 @@ pub fn get_cross_correlation(bs1: &Bitstream, bs2: &Bitstream) -> Vec<Correlatio
                 // out of range
                 continue;
             }
-            sum += if bs1.bit_at(n as usize) == bs2.bit_at((n - k) as usize) {
+            sum += if bs1.bit_at(n as usize).unwrap() == bs2.bit_at((n - k) as usize).unwrap() {
                 1
             } else {
                 0
@@ -475,6 +476,16 @@ pub fn get_cross_correlation(bs1: &Bitstream, bs2: &Bitstream) -> Vec<Correlatio
     corr_vals
 }
 
+pub fn u128_to_bitvec(val: u128, len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|ii| ((val >> (len - 1 - ii)) & 1) as u8)
+        .collect()
+}
+pub fn bitvec_to_u128(bits: &[u8]) -> u128 {
+    bits.iter().enumerate().fold(0u128, |acc, (ii, &bit)| {
+        acc | (bit as u128) << (bits.len() - 1 - ii)
+    })
+}
 /// Bitkit I/O - read in strings of bits from a text file, one Bitstream per line
 pub fn from_txt(filepath: impl AsRef<Path>) -> Result<Vec<Bitstream>, BitkitError> {
     let file = File::open(filepath)?;
@@ -501,6 +512,7 @@ pub fn from_urh(filepath: impl AsRef<Path>) -> Result<Vec<Bitstream>, BitkitErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_bits_to_syms() {
@@ -561,6 +573,15 @@ mod tests {
             hash_result,
             get_substr_counts(&vec![bs, bs2], 3, 0).unwrap()
         );
+        let bs1 = Bitstream::new("1010101100".to_string()).unwrap();
+        assert!(matches!(
+            bs1.get_substr_counts(0),
+            Err(BitkitError::EmptyString)
+        ));
+        assert!(matches!(
+            bs1.get_substr_counts(bs1.len() + 1),
+            Err(BitkitError::IndexError(_, _))
+        ));
     }
     #[test]
     fn test_bit_pcts() {
@@ -643,8 +664,8 @@ mod tests {
     #[test]
     fn test_bit_at() {
         let bs = Bitstream::new("10101011100011".to_string()).unwrap();
-        assert_eq!(bs.bit_at(0), 1);
-        assert_eq!(bs.bit_at(9), 0);
+        assert_eq!(bs.bit_at(0).unwrap(), 1);
+        assert_eq!(bs.bit_at(9).unwrap(), 0);
     }
     #[test]
     fn test_poswise_entropy() {
@@ -705,5 +726,126 @@ mod tests {
         let dist = bs1.get_hamming_dist(&bs2);
         assert!(dist.is_ok());
         assert_eq!(dist.unwrap(), 3u32);
+        assert_eq!(
+            bs1.get_hamming_dist(&bs2).unwrap(),
+            bs2.get_hamming_dist(&bs1).unwrap()
+        );
+        let bs3 = Bitstream::new("11".to_string()).unwrap();
+        assert!(matches!(
+            bs1.get_hamming_dist(&bs3),
+            Err(BitkitError::LengthMismatch(_, _))
+        ));
     }
+    #[test]
+    fn test_bitstream_new() {
+        assert!(matches!(
+            Bitstream::new("123".to_string()),
+            Err(BitkitError::InvalidBit(_))
+        ));
+        assert!(matches!(
+            Bitstream::new("".to_string()),
+            Err(BitkitError::EmptyString)
+        ));
+    }
+    pub(crate) fn bitstream_strategy() -> impl Strategy<Value = (usize, usize, Vec<u8>)> {
+        (1usize..20, 1usize..100)
+            .prop_flat_map(|(nb, lb)| (Just(nb), Just(lb), prop::collection::vec(0u8..=1, nb * lb)))
+    }
+    pub(crate) fn bitstrs_from_flat(len_bs: usize, bits: &[u8]) -> Vec<Bitstream> {
+        bits.chunks(len_bs)
+            .map(|chunk| {
+                let s: String = chunk
+                    .iter()
+                    .map(|&b| if b == 0 { '0' } else { '1' })
+                    .collect::<String>();
+                Bitstream::new(s).unwrap()
+            })
+            .collect::<Vec<_>>()
+    }
+
+    #[rustfmt::skip]
+    proptest! {
+        #[test]
+        fn prop_hamming_dist(
+            (len_bs, bits) in ((1usize..100).prop_flat_map(
+                |lb| (Just(lb), prop::collection::vec(0u8..=1, lb*3)))
+        )) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            prop_assume!(bitstrs.len() == 3);
+            let dist_ab = bitstrs[0].get_hamming_dist(&bitstrs[1]).unwrap();
+            let dist_ba = bitstrs[1].get_hamming_dist(&bitstrs[0]).unwrap();
+            let dist_ac = bitstrs[0].get_hamming_dist(&bitstrs[2]).unwrap();
+            let dist_bc = bitstrs[1].get_hamming_dist(&bitstrs[2]).unwrap();
+            // dist from bitstream to self = 0
+            prop_assert_eq!(bitstrs[0].get_hamming_dist(&bitstrs[0]).unwrap(), 0);
+            // symmetry
+            prop_assert_eq!(dist_ab, dist_ba);
+            // triangle inequality
+            prop_assert!(dist_ac <= dist_ab + dist_bc);
+        }
+        #[test]
+        fn prop_skip(
+            (len_bs, skip_bits, bits) in ((1usize..100, 1usize..100).prop_flat_map(
+                |(lb, sb)| (Just(lb), Just(sb), prop::collection::vec(0u8..=1, lb*1))))
+        ) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            prop_assume!(bitstrs.len() == 1);
+            if skip_bits < len_bs {
+                let skipped = bitstrs[0].skip(skip_bits).unwrap();
+                prop_assert_eq!(skipped.len(), bitstrs[0].len() - skip_bits);
+                for ii in 0..skipped.len() {
+                    assert_eq!(skipped.bit_at(ii).unwrap(), bitstrs[0].bit_at(ii + skip_bits).unwrap());
+                }
+            }
+            else {
+                prop_assert!(matches!(bitstrs[0].skip(skip_bits), Err(BitkitError::IndexError(_,_))));
+            }
+        }
+        #[test]
+        fn prop_symbols(
+            (len_bs, bits) in ((1usize..100).prop_flat_map(
+                |lb| (Just(lb), prop::collection::vec(0u8..=1, lb*1))))
+        ) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            prop_assume!(bitstrs.len() == 1);
+            prop_assert!(matches!(bitstrs[0].symbols(0), Err(BitkitError::EmptyString)));
+            for k in 1..=len_bs {
+                let syms = bitstrs[0].symbols(k).unwrap();
+                if !len_bs.is_multiple_of(k) {
+                    // last symbol is shorter
+                    prop_assert!(syms[syms.len()-1].len() == len_bs % k);
+                }
+                else {
+                    prop_assert!(syms.iter().all(|sym| sym.len() == k));
+                }
+                prop_assert_eq!(syms.join(""), bitstrs[0].bitstring());
+            }
+        }
+        #[test]
+        fn prop_entropy_range(
+            (len_bs, bits) in ((1usize..100).prop_flat_map(
+                |lb| (Just(lb), prop::collection::vec(0u8..=1, lb*1))))
+        ) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            for k in 1..len_bs {
+                let ent = bitstrs[0].get_normed_entropy(k).unwrap();
+                prop_assert!(ent >= 0.0);
+                prop_assert!(ent <= 1.0);
+            }
+        }
+        #[test]
+        fn prop_common_prefix(
+            (num_bs, len_bs, bits) in ((0usize..10, 1usize..100).prop_flat_map(
+                |(nb, lb)| (Just(nb), Just(lb), prop::collection::vec(0u8..=1, lb*nb))))
+        ) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            let prefix: String = find_common_prefix(&bitstrs);
+            if num_bs == 0 {
+                prop_assert_eq!(prefix.clone(), String::from(""));
+            }
+            for bs in bitstrs.iter() {
+                prop_assert!(bs.bitstring().starts_with(&prefix));
+            }
+        }
+    } // proptest
 } // mod tests
