@@ -476,11 +476,13 @@ pub fn get_cross_correlation(bs1: &Bitstream, bs2: &Bitstream) -> Vec<Correlatio
     corr_vals
 }
 
+// MSB-first numeric packing: index 0 = highest bit of val. Not polynomial coefficient order.
 pub fn u128_to_bitvec(val: u128, len: usize) -> Vec<u8> {
     (0..len)
         .map(|ii| ((val >> (len - 1 - ii)) & 1) as u8)
         .collect()
 }
+// MSB-first: index 0 is treated as the highest bit of the numeric value. Not polynomial coefficient order.
 pub fn bitvec_to_u128(bits: &[u8]) -> u128 {
     bits.iter().enumerate().fold(0u128, |acc, (ii, &bit)| {
         acc | (bit as u128) << (bits.len() - 1 - ii)

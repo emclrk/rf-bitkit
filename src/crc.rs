@@ -25,7 +25,8 @@ pub struct CrcResult {
     pub score: f32,
     /// Number of RANSAC iterations that chose this result
     pub ransac_score: usize,
-    /// `crc_polynomial` - the found CRC generator polynomial
+    /// `crc_polynomial` - the found CRC generator polynomial. poly[i] = coefficient of x^i (LSB-first).
+    /// poly[0] = 1 (constant term); poly[width] = 1 (leading term, not used as XOR mask).
     pub crc_polynomial: Vec<u8>,
 }
 impl CrcResult {
@@ -221,7 +222,7 @@ pub(crate) fn find_crc_from_varying(
                 .enumerate()
                 .fold(0u128, |acc, (ii, &bit)| {
                     acc | ((bit as u128) << (crc_width - 1 - ii))
-                }); // make sure to order MSB
+                }); // first bit in frame → bit (crc_width-1); matches crc_zero_init output
             if calc_crc_val ^ cand.xor_val == crc_packed {
                 cand.score += 1.0;
             }
@@ -302,15 +303,18 @@ pub(crate) fn reflect_vec(data: &[u8]) -> Vec<u8> {
 pub(crate) fn reflect_bits(val: u128, width: usize) -> u128 {
     (0..width).fold(0u128, |acc, i| acc | (((val >> i) & 1) << (width - 1 - i)))
 }
-// convert polynomial to u128 "sans width" - without the highest order element
-// (standard representation)
+// LSB-first: bit i of the result = coefficient of x^i = poly[i]. Drops the leading x^w term.
+// Distinct from bitvec_to_u128, which is MSB-first numeric packing.
 fn poly_to_u128(poly: &[u8]) -> u128 {
     poly[..poly.len() - 1]
         .iter()
         .enumerate()
         .fold(0u128, |acc, (i, &b)| acc | ((b as u128) << i))
 }
-/// CRC of our polynomial on a data frame with zero-state input
+// CRC of our polynomial on a data frame with zero-state input.
+// Returns a u128 where bit (width-1) is the first-transmitted CRC bit (register MSB).
+// Consistent with crc_packed convention: first bit in frame → bit (width-1).
+// (polynomial is still LSB-first)
 fn crc_zero_init(poly: &[u8], data_vec: &[u8], refin: bool, refout: bool) -> u128 {
     let width = poly.len() - 1;
     let poly_mask = poly_to_u128(poly);
@@ -352,7 +356,7 @@ fn get_xor_val(bs: &Bitstream, poly: &[u8], start_col: usize, refin: bool, refou
         .enumerate()
         .fold(0u128, |acc, (ii, &bit)| {
             acc | ((bit as u128) << (num_crc_bits - 1 - ii))
-        }); // make sure to order MSB
+        }); // first bit in frame → bit (num_crc_bits-1); matches crc_zero_init output
     let linear = crc_zero_init(poly, &data_vec, refin, refout);
     crc_packed ^ linear
 }

@@ -546,6 +546,9 @@ impl PacketSpec {
         }
         Ok(contents)
     }
+    // poly: bit i = coefficient of x^i (LSB-first), same convention as poly_to_u128 in crc.rs.
+    // NOT the same as bitvec_to_u128, which is MSB-first numeric packing.
+    // Output is MSB-first: index 0 of the returned Vec is the first-transmitted CRC bit.
     pub(crate) fn gen_crc(
         width: usize,
         poly: u128,
