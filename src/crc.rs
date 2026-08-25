@@ -289,7 +289,6 @@ fn reflect_mat(mut bitmat: BitMatrix, start_col: usize, num_bits: usize) -> BitM
 }
 /// Reflect the bits in the data vector. If data is byte aligned, each byte will be individually
 /// reflected; if not (as in, say, CRC-5/USB header), the entire thing will be reflected.
-/// Note...may be the source of our bug
 pub(crate) fn reflect_vec(data: &[u8]) -> Vec<u8> {
     if data.len().is_multiple_of(8) {
         data.chunks(8)
@@ -512,7 +511,7 @@ mod tests {
         )) {
            let refl_vec = reflect_vec(&bits);
            let refl_vec2 =  reflect_vec(&refl_vec);
-           let bitvec_u128:u128 = bitvec_to_u128(&bits);
+           let bitvec_u128: u128 = bitvec_to_u128(&bits).unwrap();
            let refl_bits = reflect_bits(bitvec_u128, bits.len());
            let refl_bits2 = reflect_bits(refl_bits, bits.len());
            prop_assert_eq!(bits, refl_vec2);
@@ -534,8 +533,8 @@ mod tests {
             let mut poly_vec: Vec<u8> = (0..width).map(|ii| ((poly >> ii) & 1) as u8).collect();
             poly_vec.push(1);  // leading 1
             let gen_result = bitvec_to_u128(
-                &crate::spec::PacketSpec::gen_crc(width, poly, 0, refin, refout, 0, &data)
-            );
+                &crate::spec::PacketSpec::gen_crc(width, poly, 0, refin, refout, 0, &data).unwrap()
+            ).unwrap();
             let zero_init_result = crc_zero_init(&poly_vec, &data, refin, refout);
             prop_assert_eq!(gen_result, zero_init_result);
         }

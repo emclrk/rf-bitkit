@@ -69,7 +69,7 @@ impl FieldSpec {
         let field_type = self.type_str();
         let optional_str: String = match self {
             Self::SyncWord { bits } | Self::Fixed { bits } => {
-                let packed = bitvec_to_u128(bits);
+                let packed = bitvec_to_u128(bits).unwrap();
                 format!(" val=0x{:x}", packed)
             }
             _ => String::new(),
@@ -220,7 +220,7 @@ impl PacketSpec {
                                 "sync word field should provide a value (val=0x..)".to_string(),
                             ))?,
                             parsed.range.1 - parsed.range.0,
-                        ),
+                        )?,
                     },
                 )),
                 FieldType::Fixed => packet.push((
@@ -231,7 +231,7 @@ impl PacketSpec {
                                 "fixed field should provide a value (val=0x..)".to_string(),
                             ))?,
                             parsed.range.1 - parsed.range.0,
-                        ),
+                        )?,
                     },
                 )),
                 FieldType::Payload => packet.push((
@@ -521,7 +521,7 @@ impl PacketSpec {
                                 &line[beg.0..end.1],
                             ),
                             None => unreachable!(),
-                        }
+                        }?
                     }
                     FieldSpec::Checksum { len, covers, label } => {
                         ranges.insert(name, (range_beg, range_beg + len));
@@ -557,7 +557,7 @@ impl PacketSpec {
         refout: bool,
         xorval: u128,
         data: &[u8],
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, BitkitError> {
         let mask: u128 = (1u128 << width) - 1;
         let bits: Vec<u8> = if refin {
             crc::reflect_vec(data)
@@ -575,7 +575,7 @@ impl PacketSpec {
         if refout {
             crc_val = crc::reflect_bits(crc_val, width);
         }
-        u128_to_bitvec(crc_val ^ xorval, width)
+        Ok(u128_to_bitvec(crc_val ^ xorval, width)?)
     }
     fn get_checksum(data: &[u8], label: &str, len: usize) -> Result<Vec<u8>, BitkitError> {
         match label {
@@ -585,8 +585,14 @@ impl PacketSpec {
                         "Data covered by the checksum is not byte aligned; cannot use addition mod 256",
                     )));
                 }
-                let val = data.chunks(8).map(bitvec_to_u128).sum::<u128>() % 256;
-                Ok(u128_to_bitvec(val, len))
+                let val = data
+                    .chunks(8)
+                    .map(bitvec_to_u128)
+                    .collect::<Result<Vec<u128>, _>>()?
+                    .iter()
+                    .sum::<u128>()
+                    % 256;
+                u128_to_bitvec(val, len)
             }
             "xor" => {
                 if !data.len().is_multiple_of(8) {
@@ -597,8 +603,10 @@ impl PacketSpec {
                 let val = data
                     .chunks(8)
                     .map(bitvec_to_u128)
+                    .collect::<Result<Vec<u128>, _>>()?
+                    .iter()
                     .fold(0u128, |acc, chunk| acc ^ chunk);
-                Ok(u128_to_bitvec(val, len))
+                u128_to_bitvec(val, len)
             }
             _ => Err(BitkitError::InvalidSpec(format!(
                 "Unknown checksum type {label}"
@@ -803,8 +811,8 @@ mod tests {
             1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0,
             1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1,
         ];
-        let checkval = PacketSpec::gen_crc(16, poly, init, refin, refout, xorval, &input);
-        assert_eq!(check, bitvec_to_u128(&checkval));
+        let checkval = PacketSpec::gen_crc(16, poly, init, refin, refout, xorval, &input).unwrap();
+        assert_eq!(check, bitvec_to_u128(&checkval).unwrap());
     }
     #[test]
     fn test_fieldtype() {
@@ -816,28 +824,28 @@ mod tests {
     #[test]
     fn test_u128_bitvec_conversion() {
         let data = vec![1, 0, 1, 1, 0, 1];
-        assert_eq!(bitvec_to_u128(&data), 45);
-        assert_eq!(u128_to_bitvec(45 as u128, data.len()), data);
+        assert_eq!(bitvec_to_u128(&data).unwrap(), 45);
+        assert_eq!(u128_to_bitvec(45 as u128, data.len()).unwrap(), data);
     }
     #[test]
     fn test_get_checksum() {
-        let data = u128_to_bitvec(10505379, 24);
+        let data = u128_to_bitvec(10505379, 24).unwrap();
         // 10100000 160
         // 01001100 76
         // 10100011 163
-        assert_eq!(
+        assert!(matches!(
             bitvec_to_u128(&PacketSpec::get_checksum(&data, "xor", 8).unwrap()),
-            79
-        );
-        assert_eq!(
+            Ok(79)
+        ));
+        assert!(matches!(
             bitvec_to_u128(&PacketSpec::get_checksum(&data, "addmod256", 8).unwrap()),
-            143
-        );
+            Ok(143)
+        ));
         assert!(matches!(
             PacketSpec::get_checksum(&data, "unknown", 8),
             Err(BitkitError::InvalidSpec(_))
         ));
-        let data_nonaligned = u128_to_bitvec(1025, 11);
+        let data_nonaligned = u128_to_bitvec(1025, 11).unwrap();
         assert!(matches!(
             PacketSpec::get_checksum(&data_nonaligned, "xor", 8),
             Err(BitkitError::InvalidSpec(_))
@@ -919,7 +927,7 @@ mod tests {
                     FieldSpec::Checksum {
                         len,
                         covers: (format!("f{lo}"), format!("f{hi}")),
-                        label: "".to_string(),
+                        label: "xor".to_string(),
                     },
                 ));
                 PacketSpec::new(named).unwrap()
@@ -942,9 +950,9 @@ mod tests {
         #[test]
         fn prop_u128_vec(
             (nbits, bits) in (1usize..20).prop_flat_map(|nb| (Just(nb), prop::collection::vec(0u8..=1u8, nb)))) {
-            let val = bitvec_to_u128(&bits);
-            let bitvec = u128_to_bitvec(val, nbits);
-            let val2 = bitvec_to_u128(&bitvec);
+            let val = bitvec_to_u128(&bits).unwrap();
+            let bitvec = u128_to_bitvec(val, nbits).unwrap();
+            let val2 = bitvec_to_u128(&bitvec).unwrap();
             prop_assert_eq!(val, val2);
             prop_assert_eq!(bits, bitvec);
         }

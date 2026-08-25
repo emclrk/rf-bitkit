@@ -260,7 +260,7 @@ mod tests {
         #[test]
         fn prop_cluster_total((num_bs, len_bs, bits, pos) in bitstream_strategy().prop_flat_map(
             |(nb, lb, bits)| { 
-                let pos_strat = prop::collection::vec(0usize..lb, 1..=lb+2);
+                let pos_strat = prop::collection::vec(0usize..=lb, 1..=lb+2);
                 (Just(nb), Just(lb), Just(bits), pos_strat)
             })
         ) {

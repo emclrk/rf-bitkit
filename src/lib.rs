@@ -91,6 +91,9 @@ pub enum BitkitError {
     #[error("Index error: used {0} object len {1}")]
     IndexError(usize, usize),
 
+    #[error("Bit length {0} overflows u128")]
+    OverflowU128(usize),
+
     #[error("Dimension error: {0}x{1} * {2}x{3}")]
     MatrixMultDimError(usize, usize, usize, usize),
 
@@ -140,7 +143,7 @@ impl Bitstream {
         }
     }
     pub fn truncate(&self, nbits: usize) -> Result<Self, BitkitError> {
-        if nbits < self.bits.len() {
+        if nbits < self.bits.len() && nbits > 0 {
             Ok(Self::new(self.bits[..nbits].to_string())?)
         } else {
             Err(BitkitError::IndexError(nbits, self.len()))
@@ -489,16 +492,24 @@ pub fn get_cross_correlation(bs1: &Bitstream, bs2: &Bitstream) -> Vec<Correlatio
 }
 
 // MSB-first numeric packing: index 0 = highest bit of val. Not polynomial coefficient order.
-pub fn u128_to_bitvec(val: u128, len: usize) -> Vec<u8> {
-    (0..len)
-        .map(|ii| ((val >> (len - 1 - ii)) & 1) as u8)
-        .collect()
+pub fn u128_to_bitvec(val: u128, len: usize) -> Result<Vec<u8>, BitkitError> {
+    if len <= 128 {
+        Ok((0..len)
+            .map(|ii| ((val >> (len - 1 - ii)) & 1) as u8)
+            .collect())
+    } else {
+        Err(BitkitError::OverflowU128(len))
+    }
 }
 // MSB-first: index 0 is treated as the highest bit of the numeric value. Not polynomial coefficient order.
-pub fn bitvec_to_u128(bits: &[u8]) -> u128 {
-    bits.iter().enumerate().fold(0u128, |acc, (ii, &bit)| {
-        acc | (bit as u128) << (bits.len() - 1 - ii)
-    })
+pub fn bitvec_to_u128(bits: &[u8]) -> Result<u128, BitkitError> {
+    if bits.len() <= 128 {
+        Ok(bits.iter().enumerate().fold(0u128, |acc, (ii, &bit)| {
+            acc | (bit as u128) << (bits.len() - 1 - ii)
+        }))
+    } else {
+        Err(BitkitError::OverflowU128(bits.len()))
+    }
 }
 /// Bitkit I/O - read in strings of bits from a text file, one Bitstream per line
 pub fn from_txt(filepath: impl AsRef<Path>) -> Result<Vec<Bitstream>, BitkitError> {
