@@ -567,7 +567,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 .collect::<Result<Vec<_>, _>>()?;
             let mut bitmat = BitMatrix::new(&varying_bitstrs)?;
             bitmat.remove_affine();
-            let ranks = windowed_rank(&bitmat);
+            let ranks = windowed_rank(&bitmat)?;
             print_rank_graph(&ranks, &ps, verbose);
         }
 

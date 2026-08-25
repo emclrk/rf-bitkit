@@ -14,7 +14,7 @@ pub mod proto;
 pub mod spec;
 
 /// Wrapper struct for a string of demodulated bits
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct Bitstream {
     #[serde(rename = "@bits")]
     bits: String,
@@ -91,6 +91,9 @@ pub enum BitkitError {
     #[error("Index error: used {0} object len {1}")]
     IndexError(usize, usize),
 
+    #[error("Bit length {0} overflows u128")]
+    OverflowU128(usize),
+
     #[error("Dimension error: {0}x{1} * {2}x{3}")]
     MatrixMultDimError(usize, usize, usize, usize),
 
@@ -133,11 +136,23 @@ impl Bitstream {
         self.bits.to_string()
     }
     pub fn skip(&self, nbits: usize) -> Result<Self, BitkitError> {
-        if nbits >= self.len() {
-            Err(BitkitError::IndexError(nbits, self.len()))
-        } else {
+        if nbits < self.bits.len() {
             Ok(Self::new(self.bits[nbits..].to_string())?)
+        } else {
+            Err(BitkitError::IndexError(nbits, self.len()))
         }
+    }
+    pub fn truncate(&self, nbits: usize) -> Result<Self, BitkitError> {
+        if nbits < self.bits.len() && nbits > 0 {
+            Ok(Self::new(self.bits[..nbits].to_string())?)
+        } else {
+            Err(BitkitError::IndexError(nbits, self.len()))
+        }
+    }
+    pub fn append(&self, newbits: &str) -> Result<Self, BitkitError> {
+        let mut newstr = self.bitstring();
+        newstr.push_str(newbits);
+        Self::new(newstr)
     }
     /// Number of bits in the Bitstream
     pub fn len(&self) -> usize {
@@ -148,8 +163,12 @@ impl Bitstream {
         self.bits.is_empty()
     }
     /// Use to index into the Bitstream
-    pub fn bit_at(&self, index: usize) -> u8 {
-        self.bits.as_bytes()[index] - b'0'
+    pub fn bit_at(&self, index: usize) -> Result<u8, BitkitError> {
+        if index < self.bits.len() {
+            Ok(self.bits.as_bytes()[index] - b'0')
+        } else {
+            Err(BitkitError::IndexError(index, self.bits.len()))
+        }
     }
     pub fn bits_as_bytes(&self) -> Vec<u8> {
         self.bits.as_bytes().iter().map(|bit| bit - b'0').collect()
@@ -161,9 +180,7 @@ impl Bitstream {
     /// if the Bitstream is not evenly divisible by `symlen`.
     pub fn symbols(&self, symlen: usize) -> Result<Vec<String>, BitkitError> {
         if symlen == 0 {
-            Err(BitkitError::MiscellaneousError(
-                "Cannot create symbols of length 0".to_string(),
-            ))
+            Err(BitkitError::EmptyString)
         } else {
             Ok(self
                 .bits
@@ -220,9 +237,7 @@ impl Bitstream {
             return Err(BitkitError::IndexError(strlen, self.len()));
         }
         if strlen == 0 {
-            return Err(BitkitError::MiscellaneousError(
-                "Can't create 0-length substrings".to_string(),
-            ));
+            return Err(BitkitError::EmptyString);
         }
         let i_range = self.len() - strlen + 1;
         for i in 0..i_range {
@@ -293,7 +308,8 @@ impl Bitstream {
                     // out of range
                     continue;
                 }
-                sum += if self.bit_at(n as usize) == self.bit_at((n - k) as usize) {
+                sum += if self.bit_at(n as usize).unwrap() == self.bit_at((n - k) as usize).unwrap()
+                {
                     1
                 } else {
                     0
@@ -364,7 +380,7 @@ pub fn positionwise_entropy(bitstrs: &[Bitstream]) -> Vec<f32> {
     let mut probs = vec![0.0f32; min_len];
     for bs in bitstrs {
         for (idx, prob) in probs.iter_mut().enumerate().take(min_len) {
-            *prob += bs.bit_at(idx) as f32;
+            *prob += bs.bit_at(idx).unwrap() as f32;
         }
     }
     for prob in probs.iter_mut() {
@@ -459,7 +475,7 @@ pub fn get_cross_correlation(bs1: &Bitstream, bs2: &Bitstream) -> Vec<Correlatio
                 // out of range
                 continue;
             }
-            sum += if bs1.bit_at(n as usize) == bs2.bit_at((n - k) as usize) {
+            sum += if bs1.bit_at(n as usize).unwrap() == bs2.bit_at((n - k) as usize).unwrap() {
                 1
             } else {
                 0
@@ -475,19 +491,46 @@ pub fn get_cross_correlation(bs1: &Bitstream, bs2: &Bitstream) -> Vec<Correlatio
     corr_vals
 }
 
+// MSB-first numeric packing: index 0 = highest bit of val. Not polynomial coefficient order.
+pub fn u128_to_bitvec(val: u128, len: usize) -> Result<Vec<u8>, BitkitError> {
+    if len <= 128 {
+        Ok((0..len)
+            .map(|ii| ((val >> (len - 1 - ii)) & 1) as u8)
+            .collect())
+    } else {
+        Err(BitkitError::OverflowU128(len))
+    }
+}
+// MSB-first: index 0 is treated as the highest bit of the numeric value. Not polynomial coefficient order.
+pub fn bitvec_to_u128(bits: &[u8]) -> Result<u128, BitkitError> {
+    if bits.len() <= 128 {
+        Ok(bits.iter().enumerate().fold(0u128, |acc, (ii, &bit)| {
+            acc | (bit as u128) << (bits.len() - 1 - ii)
+        }))
+    } else {
+        Err(BitkitError::OverflowU128(bits.len()))
+    }
+}
 /// Bitkit I/O - read in strings of bits from a text file, one Bitstream per line
 pub fn from_txt(filepath: impl AsRef<Path>) -> Result<Vec<Bitstream>, BitkitError> {
     let file = File::open(filepath)?;
     let reader = BufReader::new(file);
 
-    reader
+    let output = reader
         .lines()
         .filter_map(|line| match line {
             Err(e) => Some(Err(BitkitError::from(e))),
             Ok(s) if s.starts_with('#') || s.trim().is_empty() => None,
             Ok(s) => Some(Bitstream::new(s)),
         })
-        .collect::<Result<Vec<Bitstream>, BitkitError>>()
+        .collect::<Result<Vec<Bitstream>, BitkitError>>();
+    output.and_then(|bitstrs| {
+        if bitstrs.is_empty() {
+            Err(BitkitError::EmptyVec)
+        } else {
+            Ok(bitstrs)
+        }
+    })
 }
 
 /// Bitkit I/O - read in strings of bits from a protocol (xml) file generated by URH
@@ -501,6 +544,8 @@ pub fn from_urh(filepath: impl AsRef<Path>) -> Result<Vec<Bitstream>, BitkitErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use std::io::Write;
 
     #[test]
     fn test_bits_to_syms() {
@@ -561,6 +606,15 @@ mod tests {
             hash_result,
             get_substr_counts(&vec![bs, bs2], 3, 0).unwrap()
         );
+        let bs1 = Bitstream::new("1010101100".to_string()).unwrap();
+        assert!(matches!(
+            bs1.get_substr_counts(0),
+            Err(BitkitError::EmptyString)
+        ));
+        assert!(matches!(
+            bs1.get_substr_counts(bs1.len() + 1),
+            Err(BitkitError::IndexError(_, _))
+        ));
     }
     #[test]
     fn test_bit_pcts() {
@@ -643,8 +697,8 @@ mod tests {
     #[test]
     fn test_bit_at() {
         let bs = Bitstream::new("10101011100011".to_string()).unwrap();
-        assert_eq!(bs.bit_at(0), 1);
-        assert_eq!(bs.bit_at(9), 0);
+        assert_eq!(bs.bit_at(0).unwrap(), 1);
+        assert_eq!(bs.bit_at(9).unwrap(), 0);
     }
     #[test]
     fn test_poswise_entropy() {
@@ -705,5 +759,272 @@ mod tests {
         let dist = bs1.get_hamming_dist(&bs2);
         assert!(dist.is_ok());
         assert_eq!(dist.unwrap(), 3u32);
+        assert_eq!(
+            bs1.get_hamming_dist(&bs2).unwrap(),
+            bs2.get_hamming_dist(&bs1).unwrap()
+        );
+        let bs3 = Bitstream::new("11".to_string()).unwrap();
+        assert!(matches!(
+            bs1.get_hamming_dist(&bs3),
+            Err(BitkitError::LengthMismatch(_, _))
+        ));
     }
+    #[test]
+    fn test_bitstream_new() {
+        assert!(matches!(
+            Bitstream::new("123".to_string()),
+            Err(BitkitError::InvalidBit(_))
+        ));
+        assert!(matches!(
+            Bitstream::new("".to_string()),
+            Err(BitkitError::EmptyString)
+        ));
+    }
+    #[test]
+    fn test_skip_truncate() {
+        let bs = Bitstream::new("101001110100111110000111".to_string()).unwrap();
+        let skip_expected = Bitstream::new("0100111110000111".to_string()).unwrap();
+        let trunc_expected = Bitstream::new("1010011101001111".to_string()).unwrap();
+        assert_eq!(bs.skip(8).unwrap(), skip_expected);
+        assert_eq!(bs.truncate(16).unwrap(), trunc_expected);
+    }
+    #[test]
+    fn test_from_txt() {
+        // should work fine
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let mut lines = vec![
+            "# this is a comment".to_string(),
+            "1010".to_string(),
+            "".to_string(),
+            "  ".to_string(),
+            "# another comment".to_string(),
+            "0011".to_string(),
+        ];
+        for line in &lines {
+            writeln!(file, "{}", line).unwrap();
+        }
+        let bitstrs = from_txt(file.path().to_str().unwrap()).unwrap();
+        assert_eq!(bitstrs.len(), 2);
+        assert_eq!(bitstrs[0].bitstring(), "1010");
+        assert_eq!(bitstrs[1].bitstring(), "0011");
+        // test with bad input
+        let mut file1 = tempfile::NamedTempFile::new().unwrap();
+        lines.push("invalid line".to_string());
+        for line in lines {
+            writeln!(file1, "{}", line).unwrap();
+        }
+        assert!(matches!(
+            from_txt(file1.path().to_str().unwrap()),
+            Err(BitkitError::InvalidBit(_))
+        ));
+        // comments only
+        let mut file2 = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file2, "# line 1").unwrap();
+        writeln!(file2, "# line 2").unwrap();
+        writeln!(file2, "# line 3").unwrap();
+        assert!(matches!(
+            from_txt(file2.path().to_str().unwrap()),
+            Err(BitkitError::EmptyVec)
+        ));
+        assert!(matches!(
+            // hopefully you don't happen to just have a file like this in your path
+            from_txt("asdfghjkl.doesnotexist"),
+            Err(BitkitError::Io(..))
+        ));
+    }
+    // helpers
+    pub(crate) fn get_some_bitstrs() -> Vec<Bitstream> {
+        // generated by:
+        // # field: name=preamble type=preamble range=0..4
+        // # field: name=data1 type=payload range=4..16
+        // # field: name=crc type=crc range=16..24
+        // # crc: field=crc poly=0xa7 init=0x0 xorout=0xff refin=false refout=true covers=preamble..data1
+        vec![
+            Bitstream::new("101001110100111110000111".to_string()).unwrap(),
+            Bitstream::new("101000010011100110011101".to_string()).unwrap(),
+            Bitstream::new("101010100110010000111011".to_string()).unwrap(),
+            Bitstream::new("101010110000010110111111".to_string()).unwrap(),
+            Bitstream::new("101011011101001110101001".to_string()).unwrap(),
+            Bitstream::new("101000110100100001101111".to_string()).unwrap(),
+            Bitstream::new("101010010011001010100010".to_string()).unwrap(),
+            Bitstream::new("101011001000100110100001".to_string()).unwrap(),
+            Bitstream::new("101001101001011010010110".to_string()).unwrap(),
+            Bitstream::new("101011100010110101101011".to_string()).unwrap(),
+            Bitstream::new("101000000000100000000001".to_string()).unwrap(),
+            Bitstream::new("101010001101010010010001".to_string()).unwrap(),
+            Bitstream::new("101000001100001001111100".to_string()).unwrap(),
+            Bitstream::new("101010001100011011001000".to_string()).unwrap(),
+            Bitstream::new("101000110100001101001010".to_string()).unwrap(),
+            Bitstream::new("101001110110000110001110".to_string()).unwrap(),
+            Bitstream::new("101010010011100110000111".to_string()).unwrap(),
+            Bitstream::new("101010001101111001010001".to_string()).unwrap(),
+            Bitstream::new("101011100011001000101110".to_string()).unwrap(),
+        ]
+    }
+    pub(crate) fn get_more_bitstrs() -> Vec<Bitstream> {
+        // generated by:
+        // # field: name=preamble type=preamble range=0..4
+        // # field: name=data1 type=payload range=4..16
+        // # field: name=crc type=crc range=16..24
+        // # crc: field=crc poly=0xa7 init=0x0 xorout=0xff refin=false refout=true covers=preamble..data1
+        vec![
+            Bitstream::new("101011100010110101101011".to_string()).unwrap(),
+            Bitstream::new("101000000000100000000001".to_string()).unwrap(),
+            Bitstream::new("101010001101010010010001".to_string()).unwrap(),
+            Bitstream::new("101000001100001001111100".to_string()).unwrap(),
+            Bitstream::new("101010001100011011001000".to_string()).unwrap(),
+            Bitstream::new("101000110100001101001010".to_string()).unwrap(),
+            Bitstream::new("101001110110000110001110".to_string()).unwrap(),
+            Bitstream::new("101010010011100110000111".to_string()).unwrap(),
+            Bitstream::new("101010001101111001010001".to_string()).unwrap(),
+            Bitstream::new("101011100011001000101110".to_string()).unwrap(),
+            Bitstream::new("101000110111101110110100".to_string()).unwrap(),
+            Bitstream::new("101011010000110001010001".to_string()).unwrap(),
+            Bitstream::new("101001010101111100100001".to_string()).unwrap(),
+            Bitstream::new("101000111001100000011100".to_string()).unwrap(),
+            Bitstream::new("101011001001001001001010".to_string()).unwrap(),
+            Bitstream::new("101010100110100100100111".to_string()).unwrap(),
+            Bitstream::new("101001000011100010011100".to_string()).unwrap(),
+            Bitstream::new("101010010100101010001010".to_string()).unwrap(),
+            Bitstream::new("101000011101001110000111".to_string()).unwrap(),
+            Bitstream::new("101001111100011110111011".to_string()).unwrap(),
+            Bitstream::new("101010111001011110001101".to_string()).unwrap(),
+            Bitstream::new("101011110000101111100101".to_string()).unwrap(),
+            Bitstream::new("101011110010011010011110".to_string()).unwrap(),
+            Bitstream::new("101011111001000110000000".to_string()).unwrap(),
+            Bitstream::new("101010010000111100010111".to_string()).unwrap(),
+            Bitstream::new("101001111011110100000100".to_string()).unwrap(),
+            Bitstream::new("101000000111011111110101".to_string()).unwrap(),
+            Bitstream::new("101001101101111111110010".to_string()).unwrap(),
+            Bitstream::new("101000000011100101001101".to_string()).unwrap(),
+            Bitstream::new("101001101110000100110101".to_string()).unwrap(),
+            Bitstream::new("101010011100101100000100".to_string()).unwrap(),
+            Bitstream::new("101001001011111100101011".to_string()).unwrap(),
+            Bitstream::new("101010011110111000101000".to_string()).unwrap(),
+            Bitstream::new("101010001000100001110000".to_string()).unwrap(),
+            Bitstream::new("101000001111001100110000".to_string()).unwrap(),
+            Bitstream::new("101010100010011001111010".to_string()).unwrap(),
+            Bitstream::new("101011010101011010001001".to_string()).unwrap(),
+            Bitstream::new("101011000111011111011011".to_string()).unwrap(),
+            Bitstream::new("101000011100111110110000".to_string()).unwrap(),
+            Bitstream::new("101010011111100011011111".to_string()).unwrap(),
+            Bitstream::new("101010111011011000001111".to_string()).unwrap(),
+        ]
+    }
+    pub(crate) fn bitstream_strategy() -> impl Strategy<Value = (usize, usize, Vec<u8>)> {
+        (1usize..20, 1usize..100)
+            .prop_flat_map(|(nb, lb)| (Just(nb), Just(lb), prop::collection::vec(0u8..=1, nb * lb)))
+    }
+    pub(crate) fn bitstrs_from_flat(len_bs: usize, bits: &[u8]) -> Vec<Bitstream> {
+        bits.chunks(len_bs)
+            .map(|chunk| {
+                let s: String = chunk
+                    .iter()
+                    .map(|&b| if b == 0 { '0' } else { '1' })
+                    .collect::<String>();
+                Bitstream::new(s).unwrap()
+            })
+            .collect::<Vec<_>>()
+    }
+
+    #[rustfmt::skip]
+    proptest! {
+        #[test]
+        fn prop_hamming_dist(
+            (len_bs, bits) in ((1usize..100).prop_flat_map(
+                |lb| (Just(lb), prop::collection::vec(0u8..=1, lb*3)))
+        )) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            prop_assume!(bitstrs.len() == 3);
+            let dist_ab = bitstrs[0].get_hamming_dist(&bitstrs[1]).unwrap();
+            let dist_ba = bitstrs[1].get_hamming_dist(&bitstrs[0]).unwrap();
+            let dist_ac = bitstrs[0].get_hamming_dist(&bitstrs[2]).unwrap();
+            let dist_bc = bitstrs[1].get_hamming_dist(&bitstrs[2]).unwrap();
+            // dist from bitstream to self = 0
+            prop_assert_eq!(bitstrs[0].get_hamming_dist(&bitstrs[0]).unwrap(), 0);
+            // symmetry
+            prop_assert_eq!(dist_ab, dist_ba);
+            // triangle inequality
+            prop_assert!(dist_ac <= dist_ab + dist_bc);
+        }
+        #[test]
+        fn prop_skip(
+            (len_bs, skip_bits, bits) in ((1usize..100, 1usize..100).prop_flat_map(
+                |(lb, sb)| (Just(lb), Just(sb), prop::collection::vec(0u8..=1, lb*1))))
+        ) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            prop_assume!(bitstrs.len() == 1);
+            if skip_bits < len_bs {
+                let skipped = bitstrs[0].skip(skip_bits).unwrap();
+                prop_assert_eq!(skipped.len(), bitstrs[0].len() - skip_bits);
+                for ii in 0..skipped.len() {
+                    assert_eq!(skipped.bit_at(ii).unwrap(), bitstrs[0].bit_at(ii + skip_bits).unwrap());
+                }
+            }
+            else {
+                prop_assert!(matches!(bitstrs[0].skip(skip_bits), Err(BitkitError::IndexError(_,_))));
+            }
+        }
+        #[test]
+        fn prop_truncate(
+            (len_bs, trunc_bits, bits) in ((1usize..100, 1usize..100).prop_flat_map(
+                |(lb, tb)| (Just(lb), Just(tb), prop::collection::vec(0u8..=1, lb*1))))
+        ) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            prop_assume!(bitstrs.len() == 1);
+            if trunc_bits < len_bs {
+                let truncated = bitstrs[0].truncate(trunc_bits).unwrap();
+                prop_assert_eq!(truncated.len(), trunc_bits);
+            }
+            else {
+                prop_assert!(matches!(bitstrs[0].truncate(trunc_bits), Err(BitkitError::IndexError(_,_))));
+            }
+        }
+        #[test]
+        fn prop_symbols(
+            (len_bs, bits) in ((1usize..100).prop_flat_map(
+                |lb| (Just(lb), prop::collection::vec(0u8..=1, lb*1))))
+        ) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            prop_assume!(bitstrs.len() == 1);
+            prop_assert!(matches!(bitstrs[0].symbols(0), Err(BitkitError::EmptyString)));
+            for k in 1..=len_bs {
+                let syms = bitstrs[0].symbols(k).unwrap();
+                if !len_bs.is_multiple_of(k) {
+                    // last symbol is shorter
+                    prop_assert!(syms[syms.len()-1].len() == len_bs % k);
+                }
+                else {
+                    prop_assert!(syms.iter().all(|sym| sym.len() == k));
+                }
+                prop_assert_eq!(syms.join(""), bitstrs[0].bitstring());
+            }
+        }
+        #[test]
+        fn prop_entropy_range(
+            (len_bs, bits) in ((1usize..100).prop_flat_map(
+                |lb| (Just(lb), prop::collection::vec(0u8..=1, lb*1))))
+        ) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            for k in 1..len_bs {
+                let ent = bitstrs[0].get_normed_entropy(k).unwrap();
+                prop_assert!(ent >= 0.0);
+                prop_assert!(ent <= 1.0);
+            }
+        }
+        #[test]
+        fn prop_common_prefix(
+            (num_bs, len_bs, bits) in ((0usize..10, 1usize..100).prop_flat_map(
+                |(nb, lb)| (Just(nb), Just(lb), prop::collection::vec(0u8..=1, lb*nb))))
+        ) {
+            let bitstrs = bitstrs_from_flat(len_bs, &bits);
+            let prefix: String = find_common_prefix(&bitstrs);
+            if num_bs == 0 {
+                prop_assert_eq!(prefix.clone(), String::from(""));
+            }
+            for bs in bitstrs.iter() {
+                prop_assert!(bs.bitstring().starts_with(&prefix));
+            }
+        }
+    } // proptest
 } // mod tests

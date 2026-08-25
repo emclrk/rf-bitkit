@@ -116,6 +116,7 @@ All commands operate on a .txt file (one bitstream per line) or a URH .xml proto
 |alphabet|show symbol alphabet and frequency counts across bitstreams|
 |substrings|show most common substrings of a given length|
 |correlate|cross-correlate 2 bitstreams from a file|
+|cluster|cluster the bitstreams by different strategies|
 |rank|show a left-to-right rank graph of the bitstream columns (w/affine element removed)|
 |crc|detect crc polynomial, bit location, and parameters|
 
@@ -125,7 +126,7 @@ rf-bitkit is also a Rust library. Add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rf-bitkit = "0.3.2"
+rf-bitkit = "0.3.3"
 ```
 
 ## Status and Roadmap
@@ -136,7 +137,7 @@ However, here are a few things I have in mind:
 
 - Sync word detection in the presence of misaligned packets (cross-correlation is implemented; evaluating Smith-Waterman for handling bit insertions/deletions)
 - Protocol field boundary detection using mutual information measures
-- More sophisticated clustering to identify and separate different emitters, message types, etc
+- More sophisticated clustering to identify and separate different emitters, message types, etc. This has been started but could still be improved.
 - Probabilistic prefix detection
 
 Some user-friendliness upgrades:

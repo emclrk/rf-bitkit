@@ -25,7 +25,8 @@ pub struct CrcResult {
     pub score: f32,
     /// Number of RANSAC iterations that chose this result
     pub ransac_score: usize,
-    /// `crc_polynomial` - the found CRC generator polynomial
+    /// `crc_polynomial` - the found CRC generator polynomial. poly[i] = coefficient of x^i (LSB-first).
+    /// poly[0] = 1 (constant term); poly[width] = 1 (leading term, not used as XOR mask).
     pub crc_polynomial: Vec<u8>,
 }
 impl CrcResult {
@@ -138,7 +139,7 @@ pub(crate) fn find_crc_from_varying(
     let all_bitmat = BitMatrix::new(all_bitstrs)?;
     let mut varying_bitmat = BitMatrix::new(&sampled_varying_bitstrs)?;
     varying_bitmat.remove_affine();
-    let base_rank = varying_bitmat.mat_rank();
+    let base_rank = varying_bitmat.mat_rank()?;
     if base_rank == sampled_varying_bitstrs.len() - 1 {
         let error_msg: String = format!(
             "Matrix rank {} is too low to detect CRC with linear algebra methods. \
@@ -165,7 +166,7 @@ pub(crate) fn find_crc_from_varying(
                     "--spec-crc start column is not a varying bit; falling back to auto-detection"
                 );
             }
-            let ranks = windowed_rank(&varying_bitmat);
+            let ranks = windowed_rank(&varying_bitmat)?;
             let mut rank_drop: Vec<_> = ranks.iter().filter(|res| res.diff > 0).collect();
             if rank_drop.is_empty() {
                 let error_msg = String::from(
@@ -221,7 +222,7 @@ pub(crate) fn find_crc_from_varying(
                 .enumerate()
                 .fold(0u128, |acc, (ii, &bit)| {
                     acc | ((bit as u128) << (crc_width - 1 - ii))
-                }); // make sure to order MSB
+                }); // first bit in frame → bit (crc_width-1); matches crc_zero_init output
             if calc_crc_val ^ cand.xor_val == crc_packed {
                 cand.score += 1.0;
             }
@@ -258,7 +259,7 @@ fn construct_crc(
     bitmats.push((refout_mat, false, true));
     let mut crc_results: Vec<CrcResult> = vec![];
     for (mat, refin, refout) in bitmats.into_iter() {
-        let solved = mat.rref();
+        let solved = mat.rref()?;
         // k=start_col, w=crc_width, polynomial at G[k-w-1]
         let g_mat = solved.window(start_col, crc_width)?;
         let mut polynomial = g_mat[base_rank - 1].to_vec();
@@ -301,15 +302,18 @@ pub(crate) fn reflect_vec(data: &[u8]) -> Vec<u8> {
 pub(crate) fn reflect_bits(val: u128, width: usize) -> u128 {
     (0..width).fold(0u128, |acc, i| acc | (((val >> i) & 1) << (width - 1 - i)))
 }
-// convert polynomial to u128 "sans width" - without the highest order element
-// (standard representation)
+// LSB-first: bit i of the result = coefficient of x^i = poly[i]. Drops the leading x^w term.
+// Distinct from bitvec_to_u128, which is MSB-first numeric packing.
 fn poly_to_u128(poly: &[u8]) -> u128 {
     poly[..poly.len() - 1]
         .iter()
         .enumerate()
         .fold(0u128, |acc, (i, &b)| acc | ((b as u128) << i))
 }
-/// CRC of our polynomial on a data frame with zero-state input
+// CRC of our polynomial on a data frame with zero-state input.
+// Returns a u128 where bit (width-1) is the first-transmitted CRC bit (register MSB).
+// Consistent with crc_packed convention: first bit in frame → bit (width-1).
+// (polynomial is still LSB-first)
 fn crc_zero_init(poly: &[u8], data_vec: &[u8], refin: bool, refout: bool) -> u128 {
     let width = poly.len() - 1;
     let poly_mask = poly_to_u128(poly);
@@ -351,14 +355,17 @@ fn get_xor_val(bs: &Bitstream, poly: &[u8], start_col: usize, refin: bool, refou
         .enumerate()
         .fold(0u128, |acc, (ii, &bit)| {
             acc | ((bit as u128) << (num_crc_bits - 1 - ii))
-        }); // make sure to order MSB
+        }); // first bit in frame → bit (num_crc_bits-1); matches crc_zero_init output
     let linear = crc_zero_init(poly, &data_vec, refin, refout);
     crc_packed ^ linear
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::from_txt;
+    use crate::tests::{get_more_bitstrs, get_some_bitstrs};
+    use crate::{bitvec_to_u128, from_txt};
+    use proptest::prelude::*;
+
     fn test_crc(
         bitstrs: &[Bitstream],
         expected_poly: u128,
@@ -395,7 +402,7 @@ mod tests {
         // refin=false refout=false, nonzero init and xorout
         // also tests alternating data and fixed fields
         let bitstrs = from_txt("./tests/test_packets_00.txt").unwrap();
-        let result = test_crc(&bitstrs, 0x3, Some(1), &[], vec![]);
+        let result = test_crc(&bitstrs, 0x3, Some(10), &[], vec![]);
         assert_eq!(result.frame_start_col, 108);
     }
     #[test]
@@ -462,4 +469,74 @@ mod tests {
         let exclude = vec![11];
         let _ = test_crc(&bitstrs, 0x7, None, &exclude, vec![]);
     }
-}
+    #[test]
+    fn test_get_xor_val() {
+        let bitstr =
+            Bitstream::new("011001001101101111001101010011111100101100000100".to_string()).unwrap();
+        let xor = get_xor_val(&bitstr, &vec![1, 0, 1, 1, 0, 0, 1], 12, false, false);
+        println!("val: {:x}", xor);
+        assert_eq!(xor, 0x3D);
+    }
+    #[test]
+    fn test_find_crc_errorpaths() {
+        let bitstrs: Vec<Bitstream> = get_some_bitstrs()
+            .into_iter()
+            .chain(get_more_bitstrs())
+            .collect();
+        assert!(matches!(
+            find_crc(&vec![], None, None, &vec![], vec![]),
+            Err(BitkitError::EmptyVec)
+        ));
+        // there are 20 varying bits, so 8 streams is definitely not enough
+        assert!(matches!(
+            find_crc(&bitstrs[..8], None, None, &vec![], vec![]),
+            Err(BitkitError::CrcInsufficientSamples(_))
+        ));
+        // remove the crc bits
+        let new_bitstrs = bitstrs
+            .into_iter()
+            .map(|bs| bs.truncate(bs.len() - 8).unwrap())
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            find_crc(&new_bitstrs, None, Some(new_bitstrs.len()), &vec![], vec![]),
+            Err(BitkitError::MiscellaneousError(_))
+        ));
+    }
+    #[rustfmt::skip]
+    proptest! {
+        #[test]
+        fn prop_reflect_vec(
+            (_num_bits, bits) in ((1usize..20).prop_flat_map(|nb|
+                (Just(nb), prop::collection::vec(0u8..=1u8, nb)))
+        )) {
+           let refl_vec = reflect_vec(&bits);
+           let refl_vec2 =  reflect_vec(&refl_vec);
+           let bitvec_u128: u128 = bitvec_to_u128(&bits).unwrap();
+           let refl_bits = reflect_bits(bitvec_u128, bits.len());
+           let refl_bits2 = reflect_bits(refl_bits, bits.len());
+           prop_assert_eq!(bits, refl_vec2);
+           prop_assert_eq!(bitvec_u128, refl_bits2);
+        }
+        #[test]
+        fn prop_gencrc_crczero(
+            (width, poly, refin, refout, data) in (1usize..=16).prop_flat_map(|width| {
+                let max_val = (1u128 << width) - 1;
+                (
+                    Just(width),
+                    0u128..=max_val, // poly
+                    any::<bool>(), // refin
+                    any::<bool>(), // refout
+                    prop::collection::vec(0u8..=1u8, 1..=64)
+                )
+        })
+        ) {
+            let mut poly_vec: Vec<u8> = (0..width).map(|ii| ((poly >> ii) & 1) as u8).collect();
+            poly_vec.push(1);  // leading 1
+            let gen_result = bitvec_to_u128(
+                &crate::spec::PacketSpec::gen_crc(width, poly, 0, refin, refout, 0, &data).unwrap()
+            ).unwrap();
+            let zero_init_result = crc_zero_init(&poly_vec, &data, refin, refout);
+            prop_assert_eq!(gen_result, zero_init_result);
+        }
+    } // proptest
+} // mod tests
