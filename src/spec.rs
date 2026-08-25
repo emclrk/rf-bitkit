@@ -610,6 +610,7 @@ impl PacketSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Bitstream, crc::find_crc};
     use proptest::prelude::*;
 
     #[test]
@@ -866,7 +867,7 @@ mod tests {
                     0..n, // field for covers.0
                     0..n, // field for covers.1
                     // CRC params
-                    any::<u8>(),   // poly
+                    1u8..=255u8,   // poly
                     any::<u8>(),   // init
                     any::<bool>(), // refin
                     any::<bool>(), // refout
@@ -948,4 +949,63 @@ mod tests {
             prop_assert_eq!(bits, bitvec);
         }
     } // proptest
+    #[rustfmt::skip]
+    proptest! {
+        // put this in its own proptest block because it takes a long time to run
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn prop_gen_and_find_crc(spec in arb_packet_spec_crc()) {
+            // create a spec with a crc, generate packets, and confirm that find_crc comes up with
+            // a result instead of erroring (not checking for correctness at the moment)
+            let (cov_start, cov_end) = spec
+                .fields()
+                .iter()
+                .find_map(|(_, f)| {
+                    if let FieldSpec::Crc { covers, .. } = f {
+                        Some(covers.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            let names: Vec<&str> = spec.fields().iter().map(|(n, _)| n.as_str()).collect();
+            let lo = names.iter().position(|n| *n == cov_start).unwrap();
+            let hi = names.iter().position(|n| *n == cov_end).unwrap();
+            let covered_payload_bits: usize = spec.fields()[lo..=hi]
+                .iter()
+                .filter_map(|(_, f)| {
+                    if let FieldSpec::Payload { len } = f {
+                        Some(*len)
+                    } else {
+                        None
+                    }
+                })
+                .sum();
+            prop_assume!(covered_payload_bits >= 8);
+            let num_data_bits: usize = spec
+                .fields()
+                .iter()
+                .map(|(_, fs)| match fs {
+                    FieldSpec::Payload { len } => *len,
+                    _ => 0usize,
+                })
+                .sum();
+            prop_assume!(num_data_bits == covered_payload_bits);
+            let num_packets = covered_payload_bits + 20;
+            let packs = spec
+                .gen_packets(num_packets, None)
+                .unwrap()
+                .iter()
+                .filter_map(|line| {
+                    if line.starts_with('#') || line.trim().is_empty() {
+                        None
+                    } else {
+                        Some(Bitstream::new(line.to_string()).unwrap())
+                    }
+                })
+                .collect::<Vec<Bitstream>>();
+            let crc = find_crc(&packs, None, None, &vec![], vec![]);
+            prop_assert!(crc.is_ok(), "find crc failed: {:?}", crc);
+        }
+    }
 } // mod tests

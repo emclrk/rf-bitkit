@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 004e1f16a9748dd2c78e3e6b86afcf0f909417e484a7de1fa6f4ef25ad62249c # shrinks to spec = PacketSpec([("f0", Preamble { len: 1 }), ("crc", Crc { width: 8, poly: 0, init: 0, refin: false, refout: false, xorval: 0, covers: ("f0", "f0") })])
+cc 95123d160414ed2221c880bfb5cbc6a0c87d9819b777eea1eec75a08741afdde # shrinks to spec = PacketSpec([("f0", Payload { len: 1 }), ("crc", Crc { width: 8, poly: 0, init: 0, refin: false, refout: false, xorval: 0, covers: ("f0", "f0") })])
+cc a0489c48b4cdbc1343cdc9b00b68dbac9eb7e723411c591b5674732870ec6360 # shrinks to spec = PacketSpec([("f0", Preamble { len: 16 }), ("f1", Preamble { len: 1 }), ("f2", Payload { len: 23 }), ("f3", Fixed { bits: [0, 0, 1, 0, 1, 0, 0, 1, 0] }), ("f4", Preamble { len: 8 }), ("crc", Crc { width: 8, poly: 182, init: 12, refin: false, refout: false, xorval: 229, covers: ("f1", "f4") })])
+cc e888dfca6d004dc3f3e2db7da754d84d9fdd8b09145bf473defcf24009185f24 # shrinks to spec = PacketSpec([("f0", Preamble { len: 1 }), ("f1", Payload { len: 8 }), ("crc", Crc { width: 8, poly: 1, init: 0, refin: false, refout: false, xorval: 0, covers: ("f0", "f0") })])
+cc 1e7e41fad8e77b967f53f7dc377ca0f877a1e51e38aa8dd49b1d66c566ea1d19 # shrinks to spec = PacketSpec([("f0", Payload { len: 18 }), ("f1", Payload { len: 9 }), ("crc", Crc { width: 8, poly: 240, init: 98, refin: false, refout: true, xorval: 44, covers: ("f1", "f1") })])

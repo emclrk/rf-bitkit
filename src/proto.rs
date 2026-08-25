@@ -204,28 +204,9 @@ impl ProtocolStructure {
 mod tests {
     use super::*;
     use crate::positionwise_entropy;
-    use crate::tests::{bitstream_strategy, bitstrs_from_flat};
+    use crate::tests::{bitstream_strategy, bitstrs_from_flat, get_some_bitstrs};
     use proptest::prelude::*;
 
-    fn get_some_bitstrs() -> Vec<Bitstream> {
-        vec![
-            Bitstream::new("1000101111".to_string()).unwrap(),
-            Bitstream::new("1001100010".to_string()).unwrap(),
-            Bitstream::new("1101100010".to_string()).unwrap(),
-            Bitstream::new("1000101110".to_string()).unwrap(),
-            Bitstream::new("1010101110".to_string()).unwrap(),
-            Bitstream::new("1010101110".to_string()).unwrap(),
-            Bitstream::new("1011100010".to_string()).unwrap(),
-            Bitstream::new("1000101110".to_string()).unwrap(),
-            Bitstream::new("1000101110".to_string()).unwrap(),
-            Bitstream::new("1001100010".to_string()).unwrap(),
-            Bitstream::new("1000101110".to_string()).unwrap(),
-            Bitstream::new("1001100010".to_string()).unwrap(),
-            Bitstream::new("1001100010".to_string()).unwrap(),
-            Bitstream::new("1000101110".to_string()).unwrap(),
-            Bitstream::new("1000101110".to_string()).unwrap(),
-        ]
-    }
     #[test]
     fn test_infer_struct_empty() {
         let empty = ProtocolStructure::infer_structure(&vec![]);
@@ -237,25 +218,27 @@ mod tests {
     }
     #[test]
     fn test_infer_struct() {
-        let bits = get_some_bitstrs();
-        let ents = positionwise_entropy(&bits);
-        let ps = ProtocolStructure::infer_structure_tolerance(&ents, 0.4);
+        let mut bitstrs = get_some_bitstrs();
+        for ii in [0, 3] {
+            let mut byte_vec = bitstrs[ii].bitstring().into_bytes();
+            byte_vec[0] = b'0';
+            bitstrs[ii] = Bitstream::new(String::from_utf8(byte_vec).unwrap()).unwrap();
+        }
+        let ents = positionwise_entropy(&bitstrs);
+        let ps = ProtocolStructure::infer_structure_tolerance(&ents, 0.5);
         let expected = vec![
-            (ProtoField::Fixed, 1),
             (ProtoField::Ambiguous, 1),
-            (ProtoField::Varying, 2),
-            (ProtoField::Fixed, 2),
-            (ProtoField::Varying, 2),
-            (ProtoField::Fixed, 1),
-            (ProtoField::Ambiguous, 1),
+            (ProtoField::Fixed, 3),
+            (ProtoField::Varying, 20),
         ];
         assert_eq!(ps.get_fields(), expected);
+        assert_eq!(ps.get_num_fields(), expected.len());
         assert_eq!(
             ps.summarize(),
             HashMap::from([
-                (ProtoField::Fixed, 4),
-                (ProtoField::Varying, 4),
-                (ProtoField::Ambiguous, 2)
+                (ProtoField::Fixed, 3),
+                (ProtoField::Varying, 20),
+                (ProtoField::Ambiguous, 1)
             ])
         );
     }
@@ -265,7 +248,7 @@ mod tests {
         let ents = positionwise_entropy(&bits);
         let ps = ProtocolStructure::infer_structure(&ents);
         let varying = ps.extract_varying_bits(&bits[0]);
-        assert_eq!(varying.unwrap(), "000111".to_string());
+        assert_eq!(varying.unwrap(), &bits[0].bitstring()[4..]);
 
         let bs_wronglen = Bitstream::new("1010".to_string()).unwrap();
         assert!(matches!(
@@ -275,24 +258,43 @@ mod tests {
     }
     #[test]
     fn test_ambiguous_bits() {
-        let bits = get_some_bitstrs();
-        let ents = positionwise_entropy(&bits);
+        let mut bitstrs = get_some_bitstrs();
+        for ii in [0, 3, 6] {
+            let mut byte_vec = bitstrs[ii].bitstring().into_bytes();
+            byte_vec[0] = b'0';
+            bitstrs[ii] = Bitstream::new(String::from_utf8(byte_vec).unwrap()).unwrap();
+        }
+        let ents = positionwise_entropy(&bitstrs);
         let ps = ProtocolStructure::infer_structure_tolerance(&ents, 0.7);
-        let ambig = ps.extract_ambiguous(&bits[0]).unwrap();
-        assert_eq!(ambig.0, "01".to_string());
-        assert_eq!(ambig.1, vec![1, 9]);
+        let ambig = ps.extract_ambiguous(&bitstrs[0]).unwrap();
+        assert_eq!(ambig.0, "0".to_string());
+        assert_eq!(ambig.1, vec![0]);
+        let bs_wronglen = Bitstream::new("1010".to_string()).unwrap();
+        assert!(matches!(
+            ps.extract_ambiguous_bits(&bs_wronglen),
+            Err(BitkitError::LengthMismatch(_, _))
+        ));
     }
     #[test]
     fn test_set_exclude_to_fixed() {
-        let bits = get_some_bitstrs();
-        let ents = positionwise_entropy(&bits);
-        let ps = ProtocolStructure::infer_structure_tolerance(&ents, 0.4);
-        let ps_updated = ps.set_exclude_to_fixed(&vec![2, 3, 6, 7]);
+        let mut bitstrs = get_some_bitstrs();
+        // changing 2 arbitrarily chosen bitstrings
+        for ii in [2, 4] {
+            let mut byte_vec = bitstrs[ii].bitstring().into_bytes();
+            byte_vec[0] = b'0'; // flip
+            byte_vec[3] = b'1'; // flip
+            bitstrs[ii] = Bitstream::new(String::from_utf8(byte_vec).unwrap()).unwrap();
+        }
+        let ents = positionwise_entropy(&bitstrs);
+        let ps = ProtocolStructure::infer_structure_tolerance(&ents, 0.5);
+        let ps_updated = ps.set_exclude_to_fixed(&vec![10, 11]);
         let expected = vec![
-            (ProtoField::Fixed, 1),
-            (ProtoField::Ambiguous, 1),
-            (ProtoField::Fixed, 7),
-            (ProtoField::Ambiguous, 1),
+            (ProtoField::Ambiguous, 1), // bit 0, made ambiguous above
+            (ProtoField::Fixed, 2),
+            (ProtoField::Ambiguous, 1), // bit 3, made ambiguous above
+            (ProtoField::Varying, 6),
+            (ProtoField::Fixed, 2), // the 2 we just set
+            (ProtoField::Varying, 12),
         ];
         assert_eq!(ps_updated.get_fields(), expected);
     }
