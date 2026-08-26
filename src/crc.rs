@@ -50,8 +50,12 @@ impl CrcResult {
 /// samples is too low, but a lack of an error is not a guarantee that there are enough Bitstreams.
 /// That said, if there are at least as many Bitstreams as there are varying bits in the protocol,
 /// that should be enough (although it's better to have more for a safe cushion).
-/// At the moment we're also assuming that the packet payload strictly precedes the CRC bits and
-/// there is only one CRC in the packet.
+/// Important note: captures where data fields vary slowly across frames may have insufficient
+/// column deversity to get full rank which can cause spurious dependent columns that can mask or
+/// corrupt the finding of the CRC. Using --spec-crc to specify the location and width of the CRC
+/// may help, but it cannot compensate for a truly rank deficient matrix; this method fails in that
+/// case. (If the issue is caused by a slowly varying data field, having mesaurements that are
+/// well separated in time might help).
 pub fn find_crc(
     bitstrs: &[Bitstream],
     max_iters: Option<usize>,
