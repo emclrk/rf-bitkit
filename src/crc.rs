@@ -2,6 +2,7 @@ use crate::linalg::{BitMatrix, windowed_rank};
 use crate::proto::ProtocolStructure;
 use crate::{BitkitError, Bitstream, positionwise_entropy};
 use rand::prelude::*;
+use rand::{SeedableRng, rngs::SmallRng};
 use std::cmp::{max, min};
 
 const MAX_ITERS: usize = 10;
@@ -62,6 +63,7 @@ pub fn find_crc(
     sample_size: Option<usize>,
     exclude_bits: &[usize],
     spec_crc: Vec<usize>,
+    seed: Option<u64>,
 ) -> Result<CrcResult, BitkitError> {
     if bitstrs.is_empty() {
         return Err(BitkitError::EmptyVec);
@@ -79,7 +81,13 @@ pub fn find_crc(
         Some(ss) => ss,
         None => min(max(ps.get_num_varying() + 1, 20), bitstrs.len()),
     };
-    let mut rng = rand::rng();
+
+    let mut rng = if let Some(seed_val) = seed {
+        SmallRng::seed_from_u64(seed_val)
+    } else {
+        SmallRng::from_rng(&mut rand::rng())
+    };
+
     let mut candidates: Vec<Result<CrcResult, BitkitError>> = Vec::with_capacity(num_iters);
     // Try several times, with different random samples, and return the result with the highest
     // score
@@ -377,7 +385,7 @@ mod tests {
         exclude_bits: &[usize],
         crc_loc: Vec<usize>,
     ) -> CrcResult {
-        let result = find_crc(&bitstrs, max_iters, None, exclude_bits, crc_loc).unwrap();
+        let result = find_crc(&bitstrs, max_iters, None, exclude_bits, crc_loc, None).unwrap();
         assert_eq!(poly_to_u128(&result.crc_polynomial), expected_poly);
         let bits = bitstrs[2].bits_as_bytes();
         let data_vec: Vec<_> = bits[0..result.frame_start_col]
@@ -464,7 +472,7 @@ mod tests {
     #[test]
     fn test_schrader_bitexclude() {
         let bitstrs = from_txt("./tests/test_schrader_rtl433.txt").unwrap();
-        let err_result = find_crc(&bitstrs, None, None, &[], vec![]);
+        let err_result = find_crc(&bitstrs, None, None, &[], vec![], None);
         assert!(err_result.is_err());
         assert!(matches!(
             err_result,
@@ -488,12 +496,12 @@ mod tests {
             .chain(get_more_bitstrs())
             .collect();
         assert!(matches!(
-            find_crc(&vec![], None, None, &vec![], vec![]),
+            find_crc(&vec![], None, None, &vec![], vec![], None),
             Err(BitkitError::EmptyVec)
         ));
         // there are 20 varying bits, so 8 streams is definitely not enough
         assert!(matches!(
-            find_crc(&bitstrs[..8], None, None, &vec![], vec![]),
+            find_crc(&bitstrs[..8], None, None, &vec![], vec![], None),
             Err(BitkitError::CrcInsufficientSamples(_))
         ));
         // remove the crc bits
@@ -502,7 +510,14 @@ mod tests {
             .map(|bs| bs.truncate(bs.len() - 8).unwrap())
             .collect::<Vec<_>>();
         assert!(matches!(
-            find_crc(&new_bitstrs, None, Some(new_bitstrs.len()), &vec![], vec![]),
+            find_crc(
+                &new_bitstrs,
+                None,
+                Some(new_bitstrs.len()),
+                &vec![],
+                vec![],
+                None
+            ),
             Err(BitkitError::MiscellaneousError(_))
         ));
     }

@@ -131,6 +131,8 @@ enum Commands {
         exclude_bits: Vec<usize>,
         #[arg(long, num_args(2), value_names=["STARTCOL", "WIDTH"])]
         spec_crc: Vec<usize>,
+        #[arg(long)]
+        seed: Option<u64>,
     },
     #[command(
         about = "Cross-correlate two bitstreams",
@@ -577,6 +579,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
             sample_size,
             exclude_bits,
             spec_crc,
+            seed,
         } => {
             let bitstrs = load_file(&file)?;
             let num_iters = max_iters.unwrap_or(10);
@@ -587,6 +590,7 @@ fn run(cli: Cli) -> Result<(), BitkitError> {
                 sample_size,
                 &exclude_bits,
                 spec_crc,
+                seed,
             ) {
                 Ok(result) => {
                     let poly_val: u128 = result.crc_polynomial[..result.crc_polynomial.len() - 1]

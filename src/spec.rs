@@ -1012,7 +1012,7 @@ mod tests {
                     }
                 })
                 .collect::<Vec<Bitstream>>();
-            let crc = find_crc(&packs, None, None, &vec![], vec![]);
+            let crc = find_crc(&packs, None, None, &vec![], vec![], None);
             prop_assert!(crc.is_ok(), "find crc failed: {:?}", crc);
         }
     }
